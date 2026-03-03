@@ -11,7 +11,7 @@ Use this as the team's execution playbook.
 
 We split the project into 4 roles:
 
-1. **Capture Engineer** (EC2 + websocket + file writing)
+1. **Capture Engineer** (EC2 + L3 websocket + file writing)
 2. **Market Data Engineer** (file parsing + deterministic replay + normalization)
 3. **Exchange Engineer** (order book + matching + account/fees scaffold)
 4. **Integration & Strategy Engineer** (strategy gateway, tests, CI, contract enforcement)
@@ -31,7 +31,8 @@ Why this split:
 4. **Keep modules independent; communicate via defined interfaces only.**
 5. **Preserve capture line format exactly:**
    - `<local_ts_ns>|<channel>|<raw_json>`
-6. **Keep snapshot cadence at 10 minutes and rotate at UTC midnight.**
+6. **Treat capture as L3-first (`full`/L3 channels) unless team-approved change.**
+7. **Keep snapshot cadence at 10 minutes and rotate at UTC midnight.**
 
 ---
 
@@ -41,6 +42,7 @@ Why this split:
 Your job is to be the project's "camera operator."  
 You continuously record what the real market says, without changing it, so the rest of the team can
 replay the same day later and test strategies fairly.
+For this project, that recording target is L3 market data.
 
 ## Storyline (what you are doing in plain language)
 Think of a normal finance day:
@@ -68,7 +70,7 @@ Daily-life analogy:
 
 ## Tools you will use
 - Python (`capture/main.py` and new capture modules)
-- Coinbase websocket feed
+- Coinbase L3 websocket feed (`full` + required companion channels)
 - Queue/threading or async tools for listener/writer separation
 - EC2 (run 24/7 capture service)
 - S3 (store rotated files safely)
@@ -91,11 +93,15 @@ Output:
 
 ### Step A2 - Add one websocket listener (start simple)
 What:
-- Connect to Coinbase stream with one connection.
+- Connect to Coinbase L3 stream with one connection.
+- Use production endpoint for real capture: `wss://ws-feed.exchange.coinbase.com`.
+- Use sandbox only for connection/debug tests: `wss://ws-feed-public.sandbox.exchange.coinbase.com`.
+- Subscribe to `BTC-USD` with `full` + `heartbeat`, then verify a `subscriptions` ack.
 - For each message, capture:
   - local receive timestamp (ns)
   - channel
   - raw JSON message
+  - exchange sequence/id fields preserved inside `raw_json`
 
 Why:
 - One stable connection is easier to debug than many.
@@ -108,6 +114,7 @@ Output:
 What:
 - Listener puts events into an in-memory queue.
 - Writer reads queue and writes to disk.
+- Set a queue size limit and define overflow behavior explicitly (block or drop+log).
 
 Why:
 - Network input and disk writes run at different speeds.
@@ -118,8 +125,8 @@ Output:
 
 ### Step A4 - Enforce project file rules
 What:
-- Store incremental updates and snapshots in separate files.
-- Write snapshots every 10 minutes.
+- Store incremental L3 event logs and periodic internal snapshots in separate files.
+- Write snapshots every 10 minutes (for fast restart and replay anchors).
 - Rotate to new files at UTC midnight.
 
 Why:
@@ -134,6 +141,7 @@ What:
 - Reconnect on disconnect (with backoff).
 - Detect stalled connection (heartbeat timeout).
 - Add logs for reconnect and error events.
+- Run a local burn-in session before cloud deploy to verify no obvious gaps.
 
 Why:
 - Real websocket feeds disconnect.
@@ -145,7 +153,9 @@ Output:
 ### Step A6 - Run in cloud and move data safely
 What:
 - Run capture process on EC2 continuously.
+- Attach an IAM role to EC2 for S3 access (avoid hardcoded AWS keys).
 - Upload rotated files to S3.
+- Keep deterministic S3 key naming by product/date/type so replay can discover files reliably.
 - Confirm teammate can download same files from S3 locally.
 
 Why:
@@ -179,7 +189,7 @@ Output:
 ## Deliverables checklist for Person A
 - [ ] Live capture process running on EC2
 - [ ] Correct line format in all output files
-- [ ] Separate incremental and snapshot files
+- [ ] Separate incremental L3 logs and snapshot files
 - [ ] Snapshot every 10 minutes
 - [ ] UTC midnight rotation
 - [ ] Files uploaded to S3
@@ -199,6 +209,7 @@ right order, every time, for fair simulation.
 You are not collecting live data and not matching orders.  
 You take stored capture files and turn them into a clean, deterministic event stream for the
 exchange simulator.
+That stream is based on L3 capture records and preserves event semantics needed by matching logic.
 
 Daily-life finance analogy:
 - Imagine downloading your full bank history and trying to rebuild your spending day.
@@ -227,9 +238,10 @@ Daily-life finance analogy:
 
 ### Step B1 - Build robust file readers
 What:
-- Read incremental and snapshot files by UTC day.
+- Read incremental L3 logs and snapshot files by UTC day.
 - Parse each line using capture contract:
   - `<local_ts_ns>|<channel>|<raw_json>`
+- Parse L3 message categories from `raw_json` (for example `open`, `match`, `done`, `change`, `received`).
 - Handle malformed lines in a predictable way (strict or permissive mode).
 
 Why:
@@ -241,7 +253,7 @@ Output:
 
 ### Step B2 - Define deterministic ordering rules
 What:
-- Decide primary ordering key(s) and tie-breakers.
+- Decide primary ordering key(s) and tie-breakers (prefer exchange sequence where available).
 - Apply same ordering logic in all runs.
 - Document the rule in code and docs.
 
@@ -330,6 +342,7 @@ Output:
 Your job is to be the project's "market referee."  
 Given replayed market events and strategy orders, you decide what actually gets filled, rejected, or
 left pending according to exchange rules.
+Your inputs must reflect L3-style event detail so matching behavior is realistic.
 
 ## Storyline (what you are doing in plain language)
 You are not collecting data and not choosing strategy logic.  
@@ -459,8 +472,7 @@ Why:
 Output:
 - A clear decision trail for demos/reports.
 
-## TA explanation template (use this all semester)
-When asked "What did you do and why?", answer in this format:
+## Your workings will be explained in such way:
 
 1. **Objective**: "I implemented exchange matching behavior and order book logic."
 2. **Implementation**: "I built deterministic order handling for GTC/IOC/Post-only and exposed a strategy gateway."
@@ -478,7 +490,7 @@ When asked "What did you do and why?", answer in this format:
 
 ---
 
-## 6) Person D - Integration & Strategy Engineer
+## 6) Person D - Strategy & Integration Engineer
 
 ## Mission (simple)
 Your job is to be the project's "orchestrator and quality gatekeeper."  
@@ -596,8 +608,7 @@ Why:
 Output:
 - Clear semester-long integration story for reports/presentations.
 
-## TA explanation template (use this all semester)
-When asked "What did you do and why?", answer in this format:
+## Your workings will be explained in such way:
 
 1. **Objective**: "I integrated replay, exchange, and strategy into one testable pipeline."
 2. **Implementation**: "I built the strategy interface, wired exchange gateway calls, and added end-to-end tests."
@@ -636,9 +647,9 @@ At each checkpoint:
 - Baseline structure, CI, tests, docs, capture stub.
 
 ## Week 2
-- A: real websocket capture + queue + writer + rotation/snapshots.
-- B: replay parser foundations + deterministic ordering core.
-- C: exchange domain objects + order book scaffold.
+- A: real L3 websocket capture + queue + writer + rotation/snapshots.
+- B: L3 replay parser foundations + deterministic ordering core.
+- C: exchange domain objects + order book scaffold driven by replay events.
 - D: strategy interface + cross-module integration tests skeleton.
 
 ## Week 3
@@ -653,7 +664,7 @@ At each checkpoint:
 
 These are the key dependencies:
 
-- **A -> B**: capture file format and naming conventions.
+- **A -> B**: capture file format, naming conventions, and L3 channel/message mapping.
 - **B -> C**: normalized market event stream contract.
 - **C -> D**: strategy gateway API and fill/account events.
 - **D -> Team**: integration feedback and contract mismatch reports.
@@ -691,5 +702,5 @@ A task is accepted only if:
 This partition is intentionally interface-first.  
 Parallel work is good only when contracts are stable.
 
-If you keep these boundaries and integration cadence, your 4-person team can move quickly without
+If the following boundaries are kept, the team team can move quickly without
 breaking each other every sprint.

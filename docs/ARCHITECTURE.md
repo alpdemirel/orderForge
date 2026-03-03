@@ -1,13 +1,14 @@
 # OrderForge Architecture
 
 ## Purpose
-OrderForge is a deterministic exchange backtest simulator for Coinbase BTC-USD order flow.
+OrderForge is a deterministic exchange backtest simulator for Coinbase BTC-USD order flow,
+using an L3-first market data capture and replay pipeline.
 This repository is organized as a Python-first monorepo with clear module boundaries and explicit
 data contracts between stages. The architecture is language-agnostic so performance-critical parts
 can move to C++ later without changing data contracts.
 
 ## Module boundaries
-- `capture/`: Ingests exchange stream data and persists raw events with local receipt timestamp.
+- `capture/`: Ingests Coinbase L3 stream data and persists raw events with local receipt timestamp.
 - `market_data/`: Replays captured files in exchange-time order and emits normalized events.
 - `exchange/`: Simulated exchange core (order book, matching engine, fees, and account state).
 - `strategy/`: Strategy implementations (Avellaneda-Stoikov in a later phase).
@@ -22,11 +23,11 @@ Each persisted line must follow:
 
 Where:
 - `local_ts_ns` is local wall-clock nanoseconds from Unix epoch at ingest time.
-- `channel` is the source stream label (for example `level2`, `heartbeat`).
+- `channel` is the source stream label (for example `full`, `heartbeat`, other L3-related channels).
 - `raw_json` is the original message payload with no semantic rewriting.
 
 ### File model (hard requirement)
-- Incremental updates and snapshots are persisted into separate files.
+- Incremental L3 event logs and periodic internal snapshots are persisted into separate files.
 - Snapshots are emitted every 10 minutes.
 - Files rotate at UTC midnight.
 - Future hardening: multi-websocket arbitration, gap detection, and S3 upload.

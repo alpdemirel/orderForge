@@ -1,13 +1,13 @@
 # OrderForge Project Guide (Team Walkthrough)
 
-This document explains the project in a practical, step-by-step way for team members who know the
-high-level idea but need the implementation details and execution plan.
+This document explains the project in a practical and a step-by-step way as well as the overall execution plan.
 
 ---
 
 ## 1) What are we building?
 
-OrderForge is a high-fidelity backtest simulator for Coinbase BTC-USD market data.
+OrderForge is a high-fidelity backtest simulator for Coinbase BTC-USD market data, with
+an L3-first capture and replay design.
 
 In simple terms:
 1. We **capture** real exchange messages.
@@ -24,7 +24,7 @@ real market behavior.
 
 The full data flow we are building is:
 
-`Coinbase feed -> capture -> daily files -> deterministic replay -> exchange simulator -> strategy`
+`Coinbase L3 feed -> capture -> daily files -> deterministic replay -> exchange simulator -> strategy`
 
 Each stage has one clear responsibility so we can test and debug independently.
 
@@ -65,7 +65,7 @@ Every captured line must be:
 
 Meaning:
 - `local_ts_ns`: local machine timestamp in nanoseconds when message was received.
-- `channel`: feed channel label (`level2`, `heartbeat`, etc.).
+- `channel`: feed channel label (for example `full`, `heartbeat`, `level3`-style channels).
 - `raw_json`: original exchange payload string.
 
 This is critical because we need:
@@ -78,7 +78,7 @@ This is critical because we need:
 ## 5) Required file behavior (for upcoming weeks)
 
 These are hard requirements we committed to:
-- Keep **incremental** updates and **snapshots** in separate files.
+- Keep **incremental L3 event logs** and **periodic internal snapshots** in separate files.
 - Emit snapshots every **10 minutes**.
 - Rotate files at **UTC midnight**.
 - Later add:
@@ -144,14 +144,14 @@ Success criteria:
 ## Week 2: Real capture pipeline
 
 Step 1: Listener component  
-- Receive websocket frames from one connection.
+- Receive websocket frames from one L3 connection.
 
 Step 2: Queue and writer separation  
 - Listener only receives/timestamps.
 - Writer only persists data.
 
 Step 3: File output rules  
-- Incremental vs snapshot files.
+- Incremental L3 event files vs periodic snapshot files.
 - Snapshot every 10 minutes.
 - UTC midnight rotation.
 
@@ -183,10 +183,10 @@ Success criteria:
 ## 9) Suggested team ownership (practical split)
 
 Use this split to avoid overlap:
-- Person A: `capture/` + capture tests
-- Person B: `market_data/` replay parser and ordering
-- Person C: `exchange/` skeleton and matching rules
-- Person D: docs consistency + CI + cross-module tests
+- Person A: `capture/` + L3 capture tests
+- Person B: `market_data/` L3 replay parser and deterministic ordering
+- Person C: `exchange/` skeleton and matching rules driven by replayed L3 events
+- Person D: docs consistency + CI + cross-module tests and contract checks
 
 All contributors:
 - Keep contracts in `common/`
