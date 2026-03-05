@@ -5,3 +5,5 @@ __pycache__/
 *.egg-info/
 build/
 capture_stub_output.log
+capture_stub_output.log
+data/
