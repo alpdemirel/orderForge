@@ -1,0 +1,32 @@
+# THIS FILE WILL BE USED FOR STEP 5.1
+
+[Unit]
+Description=OrderForge Bitfinex L3 Capture Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Run as the ec2-user (or ubuntu — change to match your AMI's default user)
+User=ec2-user
+Group=ec2-user
+
+# Project lives at /home/ec2-user/orderforge
+WorkingDirectory=/home/ec2-user/orderforge
+
+# Activate the venv and run the capture module
+ExecStart=/home/ec2-user/orderforge/.venv/bin/python -m capture.main /home/ec2-user/orderforge/data
+
+# Environment variables — set your S3 bucket here
+Environment="S3_BUCKET=your-orderforge-bucket-name"
+Environment="S3_PREFIX=bitfinex/btcusd"
+
+# Restart automatically on any failure
+Restart=always
+RestartSec=10
+
+# Log to systemd journal (view with: journalctl -u orderforge-capture -f)
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
