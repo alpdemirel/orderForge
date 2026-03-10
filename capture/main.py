@@ -27,8 +27,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import boto3
-import websockets
+try:
+    import boto3
+except ModuleNotFoundError:  # pragma: no cover - optional runtime dependency
+    boto3 = None
+
+try:
+    import websockets
+except ModuleNotFoundError:  # pragma: no cover - optional runtime dependency
+    websockets = None
 
 from common.time_utils import now_local_ns
 
@@ -72,6 +79,9 @@ def snapshot_path(base_dir: Path, utc_date: str, utc_time: str) -> Path:
 def upload_to_s3(local_path: Path, s3_key: str) -> None:
     """Best-effort S3 upload. Logs errors but never raises."""
     if not S3_BUCKET:
+        return
+    if boto3 is None:
+        log.warning("boto3 not installed; skipping S3 upload.")
         return
     try:
         s3 = boto3.client("s3")
@@ -259,6 +269,9 @@ async def websocket_listener(
     maintains in-memory book_state, and puts raw messages on queue.
     Reconnects indefinitely on any failure.
     """
+    if websockets is None:
+        raise RuntimeError("websockets dependency is not installed.")
+
     backoff = 5
 
     while True:

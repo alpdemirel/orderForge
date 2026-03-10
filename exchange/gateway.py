@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from exchange.engine import ExchangeEngine
-from exchange.models import ExecutionResult, Order
+from exchange.models import AccountState, ExecutionResult, Order
 
 
 class ExchangeGateway:
@@ -20,4 +20,10 @@ class ExchangeGateway:
 
     def get_order(self, order_id: str) -> Order | None:
         return self._engine.get_order(order_id)
+
+    def get_account_state(self, owner_id: str) -> AccountState:
+        return self._engine.get_account_state(owner_id)
+
+    def get_fee_pool(self) -> float:
+        return self._engine.get_fee_pool()
 
