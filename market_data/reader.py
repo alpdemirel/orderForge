@@ -1,5 +1,5 @@
 """
-market_data/reader.py — updated for Bitfinex R0 Raw Books L3 format.
+market_data/reader.py — Bitfinex R0 Raw Books L3 format.
 
 Bitfinex channel labels written by capture/main.py:
     bf_snapshot   — initial book snapshot
@@ -7,7 +7,12 @@ Bitfinex channel labels written by capture/main.py:
     bf_subscribed — subscription confirmation
     bf_info       — connection info
 
-Line format (unchanged project contract):
+Line format (dual-timestamp, EC2 colocated with exchange):
+    <local_ts_ns>|<exchange_ts_ns>|<channel>|<raw_json>
+  - exchange_ts_ns: stamped by exchange at event time (0 if not provided)
+  - local_ts_ns: stamped by us at capture time
+
+Legacy format (3 fields) is supported for backwards compatibility:
     <local_ts_ns>|<channel>|<raw_json>
 
 For bf_snapshot:
@@ -36,7 +41,9 @@ logger = logging.getLogger(__name__)
 
 def parse_line(line: str, strict: bool = False) -> Optional[MarketEvent]:
     """
-    Parse a single capture line: <local_ts_ns>|<channel>|<raw_json>
+    Parse a capture line. Supports:
+      - New (4 fields): <local_ts_ns>|<exchange_ts_ns>|<channel>|<raw_json>
+      - Legacy (3 fields): <local_ts_ns>|<channel>|<raw_json> (exchange_ts_ns=0)
 
     Returns a MarketEvent or None (permissive mode) / raises (strict mode).
     """
@@ -45,18 +52,27 @@ def parse_line(line: str, strict: bool = False) -> Optional[MarketEvent]:
         return None
 
     try:
-        parts = line.split("|", 2)
-        if len(parts) != 3:
-            raise ValueError(f"Expected 3 pipe-delimited parts, got {len(parts)}")
+        parts = line.split("|", 3)
+        if len(parts) < 3:
+            raise ValueError(f"Expected at least 3 pipe-delimited parts, got {len(parts)}")
 
-        local_ts_ns = int(parts[0])
-        channel = parts[1]
-        raw_json = json.loads(parts[2])
+        # Detect format: 4 parts and 2nd part is numeric -> new format
+        if len(parts) == 4 and parts[1].lstrip("-").isdigit():
+            local_ts_ns = int(parts[0])
+            exchange_ts_ns = int(parts[1])
+            channel = parts[2]
+            raw_json = json.loads(parts[3])
+        else:
+            local_ts_ns = int(parts[0])
+            channel = parts[1]
+            raw_json = json.loads(parts[2])
+            exchange_ts_ns = 0
 
         return MarketEvent(
             local_ts_ns=local_ts_ns,
             channel=channel,
             raw_json=raw_json,
+            exchange_ts_ns=exchange_ts_ns,
         )
 
     except Exception as exc:
@@ -126,13 +142,21 @@ def extract_bitfinex_update(event: MarketEvent) -> dict | None:
         {"order_id": int, "price": float, "amount": float,
          "side": "bid"|"ask"|None, "removed": bool}
 
-    raw_json structure: [CHAN_ID, ORDER_ID, PRICE, AMOUNT]
+    Bitfinex sends either:
+      [CHAN_ID, ORDER_ID, PRICE, AMOUNT]  (4 elements)
+      [CHAN_ID, [ORDER_ID, PRICE, AMOUNT]] (2 elements, payload is 3-element list)
     PRICE == 0 → order removed (cancelled or fully filled).
     """
     raw = event.raw_json
-    if not isinstance(raw, list) or len(raw) < 4:
+    if not isinstance(raw, list) or len(raw) < 2:
         return None
-    _, order_id, price, amount = raw[0], raw[1], raw[2], raw[3]
+    payload = raw[1]
+    if isinstance(payload, list) and len(payload) == 3:
+        order_id, price, amount = payload[0], payload[1], payload[2]
+    elif len(raw) >= 4:
+        order_id, price, amount = raw[1], raw[2], raw[3]
+    else:
+        return None
     removed = (price == 0)
     return {
         "order_id": int(order_id),

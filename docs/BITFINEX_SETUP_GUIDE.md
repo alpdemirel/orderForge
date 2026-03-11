@@ -147,7 +147,19 @@ Wait ~2 minutes for the instance to reach "running" state.
 
 ### Step 2.4 — Note your instance's public IP
 
-EC2 Console → your instance → copy the "Public IPv4 address" (e.g. `54.123.45.67`).
+EC2 Console → your instance → copy the "Public IPv4 address" (3.121.130.22).
+
+### Step 2.5 — Attach IAM role to existing EC2 (if you skipped it at launch)
+
+If your instance's IAM role is empty, S3 uploads will fail. Attach the role:
+
+1. AWS Console → EC2 → Instances
+2. Select your `orderforge-capture` instance
+3. Actions → Security → **Modify IAM role**
+4. IAM role: select `OrderforgeEC2Role` (create it first via Step 2.2 if needed)
+5. Update IAM role
+
+No reboot needed. Restart the capture service: `sudo systemctl restart orderforge-capture`
 
 ---
 
@@ -157,8 +169,8 @@ EC2 Console → your instance → copy the "Public IPv4 address" (e.g. `54.123.4
 
 **Mac/Linux:**
 ```bash
-chmod 400 ~/Downloads/orderforge-key.pem
-ssh -i ~/Downloads/orderforge-key.pem ec2-user@54.123.45.67
+chmod 400 ~/Desktop/orderforge-key.pem
+ssh -i ~/Desktop/orderforge-key.pem ec2-user@3.121.130.22 ##THE NUMBER ON THE RIGHT IS THE REAL ADDRESS USE THIS DIRECTLY CHANGE ONLY THE FILE PATH OF THE orderforge-key.pem according to your real file path, ec2-user part is also true.
 ```
 
 **Windows (PowerShell):**
@@ -222,7 +234,7 @@ If you see `bf_snapshot` and `bf_update` lines, the feed is working correctly fr
 ### Step 4.1 — Set S3_BUCKET and test upload
 
 ```bash
-export S3_BUCKET="orderforge-capture-alp"   # your actual bucket name
+export S3_BUCKET="orderforge-s3-bucket"   
 export S3_PREFIX="bitfinex/btcusd"
 
 # Run for 30 seconds
@@ -234,7 +246,7 @@ You should see log lines like:
 2026-03-08 14:10:00 [INFO] Uploaded data/2026-03-08/snapshot_141000.log -> s3://orderforge-capture-alp/bitfinex/btcusd/2026-03-08/snapshot_141000.log
 ```
 
-Verify in the AWS Console: S3 → your bucket → browse to `bitfinex/btcusd/2026-03-08/`.
+Verify in the AWS Console: S3 → your bucket → browse to `bitfinex/btcusd/2026-03-11/`.
 
 ---
 
@@ -255,9 +267,9 @@ Find this line and update it:
 ```
 Environment="S3_BUCKET=your-orderforge-bucket-name"
 ```
-→ change to your actual bucket name, e.g.:
+→ change to your actual bucket name, which is:
 ```
-Environment="S3_BUCKET=orderforge-capture-alp"
+Environment="S3_BUCKET=orderforge-s3-bucket"
 ```
 
 Save (Ctrl-X → Y → Enter), then:

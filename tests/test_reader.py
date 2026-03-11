@@ -6,12 +6,24 @@ import tempfile
 import os
 
 def test_parse_line_valid():
+    # New 4-field format (dual timestamp)
+    line = '1772707035035967000|1772707035035000000|level2|{"type":"l2update","product_id":"BTC-USD"}'
+    event = parse_line(line)
+    assert event is not None
+    assert event.local_ts_ns == 1772707035035967000
+    assert event.exchange_ts_ns == 1772707035035000000
+    assert event.channel == "level2"
+    assert event.raw_json == {"type": "l2update", "product_id": "BTC-USD"}
+
+
+def test_parse_line_legacy_3_field():
+    # Legacy 3-field format (backwards compat)
     line = '1772707035035967000|level2|{"type":"l2update","product_id":"BTC-USD"}'
     event = parse_line(line)
     assert event is not None
     assert event.local_ts_ns == 1772707035035967000
+    assert event.exchange_ts_ns == 0
     assert event.channel == "level2"
-    assert event.raw_json == {"type": "l2update", "product_id": "BTC-USD"}
 
 def test_parse_line_missing_delimiter():
     line = '1772707035035967000level2|{"type":"l2update"}'
@@ -33,9 +45,9 @@ def test_parse_line_empty():
 
 def test_read_capture_file():
     lines = [
-        '1772707035035900000|level2|{"type":"snapshot"}\n',
+        '1772707035035900000|0|level2|{"type":"snapshot"}\n',
         'invalid_line_no_delimiters\n',
-        '1772707035035967000|heartbeat|{"type":"heartbeat"}\n'
+        '1772707035035967000|0|heartbeat|{"type":"heartbeat"}\n'
     ]
     
     with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:

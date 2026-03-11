@@ -46,3 +46,5 @@ The stub writes sample lines in the required format:
 - `docs/PHASE1_PLAN.md`
 - `docs/PROJECT_GUIDE.md` (detailed team walkthrough)
 - `docs/WORK_PARTITION.md` (4-person detailed responsibilities and sequence)
+- `docs/DATA_RETRIEVAL.md` (how to pull captured data from S3 or EC2 for replay)
+- `docs/L3_VERIFY_AND_DEPLOY.md` (verify L3 format, deploy to EC2, test S3)

@@ -2,8 +2,13 @@
 OrderForge Capture — Bitfinex R0 Raw Books (L3) primary source.
 Replaces capture/main.py (Coinbase stub).
 
-Line format (unchanged contract):
-    <local_ts_ns>|<channel>|<raw_json>
+Dual-timestamp format (EC2 colocated in same AWS region & AZ as exchange):
+    <local_ts_ns>|<exchange_ts_ns>|<channel>|<raw_json>
+  - exchange_ts_ns: stamped by exchange at event time (0 if Bitfinex does not provide)
+  - local_ts_ns: stamped by us at capture time
+
+Bitfinex R0 Raw Books does not include exchange timestamp in book messages;
+we use 0 for exchange_ts_ns. Future exchanges (e.g. Coinbase) may provide it.
 
 Bitfinex-specific channels written:
     bf_snapshot   — initial full book snapshot (list of [ORDER_ID, PRICE, AMOUNT])
@@ -54,10 +59,14 @@ S3_BUCKET = os.getenv("S3_BUCKET", "")          # e.g. "orderforge-capture"
 S3_PREFIX = os.getenv("S3_PREFIX", "bitfinex/btcusd")  # key prefix inside bucket
 
 
-# ── Line builder (preserves existing contract) ────────────────────────────────
-def build_line(channel: str, raw_json: str) -> str:
-    """Returns: <local_ts_ns>|<channel>|<raw_json>"""
-    return f"{now_local_ns()}|{channel}|{raw_json}"
+# ── Line builder (dual-timestamp L3 contract) ───────────────────────────────────
+def build_line(channel: str, raw_json: str, exchange_ts_ns: int = 0) -> str:
+    """
+    Returns: <local_ts_ns>|<exchange_ts_ns>|<channel>|<raw_json>
+    Bitfinex R0 does not provide exchange timestamp; use 0.
+    """
+    local_ts_ns = now_local_ns()
+    return f"{local_ts_ns}|{exchange_ts_ns}|{channel}|{raw_json}"
 
 
 # ── File path helpers ─────────────────────────────────────────────────────────
@@ -296,10 +305,15 @@ async def websocket_listener(
                         data = json.loads(raw_msg)
                         if isinstance(data, list):
                             if len(data) == 2 and isinstance(data[1], list):
-                                # Snapshot
-                                apply_snapshot(book_state, data[1])
+                                payload = data[1]
+                                # Snapshot: [CHAN_ID, [[OID,P,A], [OID,P,A], ...]]
+                                if payload and isinstance(payload[0], list):
+                                    apply_snapshot(book_state, payload)
+                                # Update: [CHAN_ID, [OID, P, A]]
+                                elif len(payload) == 3:
+                                    apply_update(book_state, payload[0], payload[1], payload[2])
                             elif len(data) == 4 and not isinstance(data[1], str):
-                                # Update: [chan_id, order_id, price, amount]
+                                # Update (alt format): [chan_id, order_id, price, amount]
                                 apply_update(book_state, data[1], data[2], data[3])
                     except Exception as e:
                         log.warning(f"Book state update error: {e}")
