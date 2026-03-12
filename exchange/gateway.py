@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any, Callable
 from exchange.engine import ExchangeEngine
 from exchange.models import AccountState, ExecutionResult, Order
 
@@ -14,6 +15,9 @@ class ExchangeGateway:
 
     def submit_order(self, order: Order, estimated_exchange_ts: int = 0) -> None:
         return self._engine.submit_order(order, estimated_exchange_ts)
+
+    def submit_market_update(self, event: Any, strategy_callback: Callable) -> None:
+        return self._engine.submit_market_update(event, strategy_callback)
 
     def cancel_order(self, order_id: str) -> bool:
         return self._engine.cancel_order(order_id)

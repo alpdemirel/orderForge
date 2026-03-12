@@ -2,6 +2,7 @@ import pytest
 from strategy.noop import NoOpStrategy
 from exchange.engine import ExchangeEngine
 from exchange.models import OrderStatus
+from common.types import MarketEvent
 
 def test_latency_simulation_queue():
     """
@@ -42,3 +43,33 @@ def test_latency_simulation_queue():
     assert len(engine.event_queue) == 0
     assert engine.get_order(order.order_id) is not None
     assert engine.book.orders.get(order.order_id) is not None
+
+class TrackingStrategy(NoOpStrategy):
+    def __init__(self):
+        super().__init__()
+        self.received_market_data = []
+        
+    def on_market_data(self, event):
+        self.received_market_data.append(event)
+
+def test_market_data_routing_through_queue():
+    engine = ExchangeEngine()
+    strategy = TrackingStrategy()
+    strategy.connect_exchange(engine)
+    
+    event = MarketEvent(exchange_ts_ns=1000, local_ts_ns=1050, channel="bf_update", raw_json=[])
+    
+    # Send to the engine queue instead of direct to strategy
+    engine.submit_market_update(event, strategy.on_market_data)
+    
+    # 1. Strategy shouldn't have it yet because time hasn't advanced to 1000
+    assert len(strategy.received_market_data) == 0
+    
+    # 2. Advance time to 999
+    engine.tick(999)
+    assert len(strategy.received_market_data) == 0
+    
+    # 3. Advance to 1000 (Event executed)
+    engine.tick(1000)
+    assert len(strategy.received_market_data) == 1
+    assert strategy.received_market_data[0].exchange_ts_ns == 1000

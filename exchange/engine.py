@@ -46,6 +46,15 @@ class ExchangeEngine:
             event = heapq.heappop(self.event_queue)
             event.action(*event.args, **event.kwargs)
 
+    def submit_market_update(self, event: Any, strategy_callback: Callable) -> None:
+        """
+        Queues a market data event to be processed at its `exchange_ts_ns` time.
+        When time reaches this point, the event is passed to the strategy callback.
+        """
+        # Ensure we don't schedule in the past
+        target_ts = max(self.current_time_ns, event.exchange_ts_ns)
+        self.schedule_event(target_ts, strategy_callback, event)
+
     def submit_order(self, order: Order, estimated_exchange_ts: int = 0) -> None:
         """
         Queues an order to be executed at the simulated `estimated_exchange_ts`.

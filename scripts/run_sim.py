@@ -12,6 +12,7 @@ if PROJECT_ROOT not in sys.path:
 
 from strategy.noop import NoOpStrategy
 from exchange import ExchangeGateway
+from common.types import MarketEvent
 
 def run_simulation() -> None:
     print("[run_sim] Initializing exchange gateway...")
@@ -25,6 +26,15 @@ def run_simulation() -> None:
 
     exch_ts = 1000
     local_ts = 1015
+    print(f"[run_sim] Creating a fake MarketEvent with exch_ts={exch_ts}, local_ts={local_ts}...")
+    event = MarketEvent(exchange_ts_ns=exch_ts, local_ts_ns=local_ts, channel="bf_update", raw_json=[])
+
+    print("[run_sim] Submitting MarketEvent to the Simulator Queue...")
+    gateway.submit_market_update(event, strategy.on_market_data)
+
+    print(f"[run_sim] Advancing time to {exch_ts} to push the event to the strategy...")
+    gateway._engine.tick(exch_ts)
+
     print(f"[run_sim] Updating strategy clock with exch_ts={exch_ts}, local_ts={local_ts}...")
     strategy.update_clock(exch_ts=exch_ts, local_ts=local_ts)
     print(f"[run_sim] Current latency estimate: {strategy.current_latency_estimate}ms")
