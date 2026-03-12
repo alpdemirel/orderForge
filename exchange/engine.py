@@ -9,8 +9,8 @@ from exchange.order_book import OrderBook
 class ExchangeEngine:
     """Small, test-friendly scaffold for Person C responsibilities."""
 
-    MAKER_FEE_BPS = 0.0
-    TAKER_FEE_BPS = 5.0
+    MAKER_FEE_BPS: int = 0      # 0 BPS
+    TAKER_FEE_BPS: int = 5      # 5 BPS = 0.05%
 
     def __init__(self) -> None:
         self.book = OrderBook()
@@ -142,5 +142,5 @@ class ExchangeEngine:
         return taker_fee_total, maker_fees
 
     @staticmethod
-    def _compute_fee(notional: int, fee_bps: float) -> int:
-        return round(notional * (fee_bps / 10_000.0))
+    def _compute_fee(notional: int, fee_bps: int) -> int:
+        return (notional * fee_bps) // 10_000 # Fixed-point division to avoid float drift
