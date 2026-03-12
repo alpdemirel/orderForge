@@ -1,4 +1,8 @@
+import uuid
 from abc import ABC, abstractmethod
+
+from exchange import Order, Side, TimeInForce
+from exchange.models import QUANTITY_MULTIPLIER
 
 class BaseStrategy(ABC):
     """
@@ -47,19 +51,39 @@ class BaseStrategy(ABC):
     def submit_order(self, price, side, amount, order_type="GTC"):
         """
         Gateway method for the strategy to send orders to the exchange.
-        Calls the exchange's order reception interface.
+        Automatically converts strategy-level intent into the engine's native Order object.
         """
         if not self.exchange:
             raise ConnectionError("Strategy is not connected to any exchange engine.")
             
+        # Our latency math is still preserved here
         estimated_exchange_ts = self.current_local_ts + self.current_latency_estimate
 
+        # Convert simple string inputs from the strategy (e.g., "buy") into the exchange's Enum types
+        side_enum = Side.BUY if str(side).lower() == "buy" else Side.SELL
 
-        # This calls Person C's matching engine receive method
-        return self.exchange.receive_order(
-            price=price, 
-            side=side, 
-            amount=amount, 
-            order_type=order_type,
-            estimated_exchange_ts=estimated_exchange_ts
+        order_type_lower = str(order_type).lower()
+        if order_type_lower == "ioc":
+            tif = TimeInForce.IOC
+        elif order_type_lower == "post_only":
+            tif = TimeInForce.POST_ONLY
+        else:
+            tif = TimeInForce.GTC
+
+        # Convert the human-friendly quantity into the engine's fixed-point integer units using QUANTITY_MULTIPLIER
+        quantity = int(amount * QUANTITY_MULTIPLIER)
+        
+        # Create a unique ID for each order
+        order_id = f"strat_order_{uuid.uuid4().hex[:8]}"
+
+        # Prepare the concrete Order object expected by Bora's matching engine
+        order = Order(
+            order_id=order_id,
+            side=side_enum,
+            price=price,
+            quantity=quantity,
+            tif=tif
         )
+
+        # Call the correct function on the exchange adapter/gateway
+        return self.exchange.submit_order(order)
