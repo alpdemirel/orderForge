@@ -15,7 +15,7 @@ class ExchangeEngine:
     def __init__(self) -> None:
         self.book = OrderBook()
         self._accounts: dict[str, AccountState] = {}
-        self._fee_pool: float = 0.0
+        self._fee_pool: int = 0
 
     def submit_order(self, order: Order) -> ExecutionResult:
         if order.quantity <= 0:
@@ -61,7 +61,7 @@ class ExchangeEngine:
     def get_account_state(self, owner_id: str) -> AccountState:
         return self._accounts.setdefault(owner_id, AccountState(owner_id=owner_id))
 
-    def get_fee_pool(self) -> float:
+    def get_fee_pool(self) -> int:
         return self._fee_pool
 
     def _would_cross(self, order: Order) -> bool:
@@ -111,10 +111,10 @@ class ExchangeEngine:
 
         return fills
 
-    def _apply_fill_accounting(self, taker: Order, fills: list[Fill]) -> tuple[float, dict[str, float]]:
+    def _apply_fill_accounting(self, taker: Order, fills: list[Fill]) -> tuple[int, dict[str, int]]:
         taker_state = self.get_account_state(taker.owner_id)
-        taker_fee_total = 0.0
-        maker_fees: dict[str, float] = {}
+        taker_fee_total = 0
+        maker_fees: dict[str, int] = {}
 
         for fill in fills:
             notional = fill.price * fill.quantity
@@ -137,11 +137,10 @@ class ExchangeEngine:
 
             self._fee_pool += maker_fee + taker_fee
             taker_fee_total += taker_fee
-            maker_fees[fill.maker_owner_id] = maker_fees.get(fill.maker_owner_id, 0.0) + maker_fee
+            maker_fees[fill.maker_owner_id] = maker_fees.get(fill.maker_owner_id, 0) + maker_fee
 
         return taker_fee_total, maker_fees
 
     @staticmethod
-    def _compute_fee(notional: float, fee_bps: float) -> float:
-        return notional * (fee_bps / 10_000.0)
-
+    def _compute_fee(notional: int, fee_bps: float) -> int:
+        return round(notional * (fee_bps / 10_000.0))

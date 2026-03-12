@@ -24,6 +24,6 @@ class ExchangeGateway:
     def get_account_state(self, owner_id: str) -> AccountState:
         return self._engine.get_account_state(owner_id)
 
-    def get_fee_pool(self) -> float:
+    def get_fee_pool(self) -> int:
         return self._engine.get_fee_pool()
 

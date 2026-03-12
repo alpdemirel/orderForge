@@ -11,8 +11,8 @@ class OrderBook:
     """Simple price-time priority scaffold for resting orders."""
 
     def __init__(self) -> None:
-        self._bids: dict[float, deque[str]] = defaultdict(deque)
-        self._asks: dict[float, deque[str]] = defaultdict(deque)
+        self._bids: dict[int, deque[str]] = defaultdict(deque)
+        self._asks: dict[int, deque[str]] = defaultdict(deque)
         self._orders: dict[str, Order] = {}
 
     @property
@@ -41,10 +41,10 @@ class OrderBook:
 
         return order
 
-    def best_bid(self) -> float | None:
+    def best_bid(self) -> int | None:
         return max(self._bids) if self._bids else None
 
-    def best_ask(self) -> float | None:
+    def best_ask(self) -> int | None:
         return min(self._asks) if self._asks else None
 
     def pop_best(self, side: Side) -> Order | None:
