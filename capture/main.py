@@ -124,14 +124,40 @@ def archive_previous_day(base_dir: Path, date_str: str) -> None:
         s3_key = make_s3_key(f"{date_str}.tar.gz", date_str)
         upload_to_s3(tar_path, s3_key)
         
-        # Cleanup BOTH the uncompressed directory and the local tar file ONLY if upload succeeded
-        log.info(f"Upload successful. Cleaning up local files for {date_str}...")
-        shutil.rmtree(day_dir)
+        # Cleanup the local tar file ONLY if upload succeeded
+        log.info(f"Upload successful. Removing local archive for {date_str}...")
         tar_path.unlink(missing_ok=True)
-        log.info(f"Cleanup for {date_str} complete.")
+        
+        # Now clean up old directories (older than 24 hours / 1 day)
+        clean_old_directories(base_dir)
         
     except Exception as exc:
         log.error(f"Archive process failed for {date_str}: {exc}")
+
+
+def clean_old_directories(base_dir: Path) -> None:
+    """
+    Deletes directories in base_dir that are older than 1 day from the current UTC date.
+    """
+    try:
+        now_utc = datetime.now(timezone.utc)
+        retention_days = 1
+        
+        for item in base_dir.iterdir():
+            if item.is_dir():
+                try:
+                    # Expect foldernames like YYYY-MM-DD
+                    folder_date = datetime.strptime(item.name, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    age_days = (now_utc - folder_date).days
+                    
+                    if age_days > retention_days:
+                        log.info(f"Cleaning up 24h+ old local directory: {item}")
+                        shutil.rmtree(item)
+                except ValueError:
+                    # Ignore folders that don't match the date format
+                    continue
+    except Exception as e:
+        log.error(f"Failed to clean old directories: {e}")
 
 
 
