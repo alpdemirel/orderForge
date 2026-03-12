@@ -9,12 +9,25 @@ class BaseStrategy(ABC):
         # Placeholder for the exchange simulator instance (Person C's engine)
         self.exchange = None
 
+        # Internal clock and network latency tracking
+        self.current_local_ts = 0
+        self.current_latency_estimate = 0
+
     def connect_exchange(self, exchange):
         """
         Links the strategy to the exchange simulator.
         Used by the Integration Engineer (Person D) during orchestration.
         """
         self.exchange = exchange
+
+    def update_clock(self, exch_ts, local_ts):
+        """
+        Updates the strategy's internal clock and estimates network latency.
+        Must be called every time a new market data event is received.
+        Formula: Latency = local_ts - exch_ts
+        """
+        self.current_local_ts = local_ts
+        self.current_latency_estimate = local_ts - exch_ts
 
     @abstractmethod
     def on_market_data(self, event):
@@ -39,10 +52,14 @@ class BaseStrategy(ABC):
         if not self.exchange:
             raise ConnectionError("Strategy is not connected to any exchange engine.")
             
+        estimated_exchange_ts = self.current_local_ts + self.current_latency_estimate
+
+
         # This calls Person C's matching engine receive method
         return self.exchange.receive_order(
             price=price, 
             side=side, 
             amount=amount, 
-            order_type=order_type
+            order_type=order_type,
+            estimated_exchange_ts=estimated_exchange_ts
         )
