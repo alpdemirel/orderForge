@@ -19,7 +19,7 @@ class DummyExchange:
     def __init__(self):
         self.received_orders = []
         
-    def submit_order(self, order):
+    def submit_order(self, order, estimated_exchange_ts=0):
         # Record the received order object directly
         self.received_orders.append(order)
         return "fake_order_accepted"

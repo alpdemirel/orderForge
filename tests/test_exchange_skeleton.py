@@ -7,7 +7,7 @@ from exchange.models import OrderStatus
 def test_post_only_rejected_when_crossing() -> None:
     gateway = ExchangeGateway()
     sell = Order(order_id="s1", side=Side.SELL, price=1000, quantity=100_000_000)
-    gateway.submit_order(sell)
+    gateway._engine._process_order(sell)
 
     buy_post_only = Order(
         order_id="b1",
@@ -16,7 +16,7 @@ def test_post_only_rejected_when_crossing() -> None:
         quantity=100_000_000,
         tif=TimeInForce.POST_ONLY,
     )
-    result = gateway.submit_order(buy_post_only)
+    result = gateway._engine._process_order(buy_post_only)
 
     assert result.accepted is False
     assert result.reason == "post_only_would_cross"
@@ -25,7 +25,7 @@ def test_post_only_rejected_when_crossing() -> None:
 def test_ioc_unfilled_is_canceled() -> None:
     gateway = ExchangeGateway()
     ioc = Order(order_id="ioc1", side=Side.BUY, price=1000, quantity=100_000_000, tif=TimeInForce.IOC)
-    result = gateway.submit_order(ioc)
+    result = gateway._engine._process_order(ioc)
 
     assert result.accepted is True
     assert result.reason == "ioc_unfilled_canceled"
@@ -34,7 +34,7 @@ def test_ioc_unfilled_is_canceled() -> None:
 def test_gtc_order_rests_when_no_match() -> None:
     gateway = ExchangeGateway()
     buy = Order(order_id="b_rest", side=Side.BUY, price=990, quantity=200_000_000)
-    result = gateway.submit_order(buy)
+    result = gateway._engine._process_order(buy)
 
     assert result.accepted is True
     assert result.fills == []
@@ -46,7 +46,7 @@ def test_gtc_order_rests_when_no_match() -> None:
 def test_crossing_order_fills_and_updates_account_hooks() -> None:
     gateway = ExchangeGateway()
     maker = Order(order_id="s_maker", owner_id="maker_1", side=Side.SELL, price=1000, quantity=150_000_000)
-    gateway.submit_order(maker)
+    gateway._engine._process_order(maker)
 
     taker = Order(
         order_id="b_taker",
@@ -56,7 +56,7 @@ def test_crossing_order_fills_and_updates_account_hooks() -> None:
         quantity=100_000_000,
         tif=TimeInForce.GTC,
     )
-    result = gateway.submit_order(taker)
+    result = gateway._engine._process_order(taker)
 
     assert result.accepted is True
     assert len(result.fills) == 1
@@ -83,9 +83,9 @@ def test_cancel_order_returns_false_for_unknown_id() -> None:
 def test_matching_is_deterministic_for_same_input_sequence() -> None:
     def run_sequence() -> tuple[list[tuple[str, str, int, int]], int]:
         gateway = ExchangeGateway()
-        gateway.submit_order(Order(order_id="s1", owner_id="m1", side=Side.SELL, price=1010, quantity=100_000_000))
-        gateway.submit_order(Order(order_id="s2", owner_id="m2", side=Side.SELL, price=1000, quantity=100_000_000))
-        result = gateway.submit_order(
+        gateway._engine._process_order(Order(order_id="s1", owner_id="m1", side=Side.SELL, price=1010, quantity=100_000_000))
+        gateway._engine._process_order(Order(order_id="s2", owner_id="m2", side=Side.SELL, price=1000, quantity=100_000_000))
+        result = gateway._engine._process_order(
             Order(order_id="b1", owner_id="t1", side=Side.BUY, price=1010, quantity=150_000_000)
         )
         fills = [
@@ -112,10 +112,10 @@ def test_gtc_taker_partially_fills_remainder_rests_on_book() -> None:
     """
     gateway = ExchangeGateway()
     maker = Order(order_id="s1", owner_id="maker_1", side=Side.SELL, price=1000, quantity=200_000_000)
-    gateway.submit_order(maker)
+    gateway._engine._process_order(maker)
 
     taker = Order(order_id="b1", owner_id="taker_1", side=Side.BUY, price=1000, quantity=100_000_000)
-    result = gateway.submit_order(taker)
+    result = gateway._engine._process_order(taker)
 
     # Taker fully filled
     assert result.accepted is True
@@ -152,7 +152,7 @@ def test_ioc_partially_fills_then_cancels_remainder() -> None:
     """
     gateway = ExchangeGateway()
     maker = Order(order_id="s1", owner_id="maker_1", side=Side.SELL, price=1000, quantity=50_000_000)
-    gateway.submit_order(maker)
+    gateway._engine._process_order(maker)
 
     ioc = Order(
         order_id="ioc1",
@@ -162,7 +162,7 @@ def test_ioc_partially_fills_then_cancels_remainder() -> None:
         quantity=100_000_000,
         tif=TimeInForce.IOC,
     )
-    result = gateway.submit_order(ioc)
+    result = gateway._engine._process_order(ioc)
 
     # Accepted but canceled after partial fill
     assert result.accepted is True
@@ -191,7 +191,7 @@ def test_cancel_resting_gtc_order_removes_it_from_book() -> None:
     """
     gateway = ExchangeGateway()
     order = Order(order_id="b1", side=Side.BUY, price=990, quantity=100_000_000)
-    gateway.submit_order(order)
+    gateway._engine._process_order(order)
 
     # Order is on the book
     assert gateway.get_order("b1") is not None
@@ -219,11 +219,11 @@ def test_price_priority_best_ask_fills_first() -> None:
     taker_fee = (99_000_000_000 * 5) // 10_000 = 49_500_000
     """
     gateway = ExchangeGateway()
-    gateway.submit_order(Order(order_id="s_high", owner_id="m1", side=Side.SELL, price=1010, quantity=100_000_000))
-    gateway.submit_order(Order(order_id="s_low",  owner_id="m2", side=Side.SELL, price=990,  quantity=100_000_000))
+    gateway._engine._process_order(Order(order_id="s_high", owner_id="m1", side=Side.SELL, price=1010, quantity=100_000_000))
+    gateway._engine._process_order(Order(order_id="s_low",  owner_id="m2", side=Side.SELL, price=990,  quantity=100_000_000))
 
     taker = Order(order_id="b1", owner_id="taker_1", side=Side.BUY, price=1010, quantity=100_000_000)
-    result = gateway.submit_order(taker)
+    result = gateway._engine._process_order(taker)
 
     assert result.accepted is True
     assert len(result.fills) == 1
@@ -254,11 +254,11 @@ def test_price_priority_best_bid_fills_first() -> None:
     taker_fee = (101_000_000_000 * 5) // 10_000 = 50_500_000
     """
     gateway = ExchangeGateway()
-    gateway.submit_order(Order(order_id="b_low",  owner_id="m1", side=Side.BUY, price=990,  quantity=100_000_000))
-    gateway.submit_order(Order(order_id="b_high", owner_id="m2", side=Side.BUY, price=1010, quantity=100_000_000))
+    gateway._engine._process_order(Order(order_id="b_low",  owner_id="m1", side=Side.BUY, price=990,  quantity=100_000_000))
+    gateway._engine._process_order(Order(order_id="b_high", owner_id="m2", side=Side.BUY, price=1010, quantity=100_000_000))
 
     taker = Order(order_id="s1", owner_id="taker_1", side=Side.SELL, price=990, quantity=100_000_000)
-    result = gateway.submit_order(taker)
+    result = gateway._engine._process_order(taker)
 
     assert result.accepted is True
     assert len(result.fills) == 1
@@ -290,11 +290,11 @@ def test_time_priority_earlier_order_fills_first() -> None:
     taker_fee = (100_000_000_000 * 5) // 10_000 = 50_000_000
     """
     gateway = ExchangeGateway()
-    gateway.submit_order(Order(order_id="s_first",  owner_id="m1", side=Side.SELL, price=1000, quantity=100_000_000))
-    gateway.submit_order(Order(order_id="s_second", owner_id="m2", side=Side.SELL, price=1000, quantity=100_000_000))
+    gateway._engine._process_order(Order(order_id="s_first",  owner_id="m1", side=Side.SELL, price=1000, quantity=100_000_000))
+    gateway._engine._process_order(Order(order_id="s_second", owner_id="m2", side=Side.SELL, price=1000, quantity=100_000_000))
 
     taker = Order(order_id="b1", owner_id="taker_1", side=Side.BUY, price=1000, quantity=100_000_000)
-    result = gateway.submit_order(taker)
+    result = gateway._engine._process_order(taker)
 
     assert result.accepted is True
     assert len(result.fills) == 1
@@ -325,7 +325,7 @@ def test_post_only_rests_on_book_when_no_cross() -> None:
         quantity=100_000_000,
         tif=TimeInForce.POST_ONLY,
     )
-    result = gateway.submit_order(order)
+    result = gateway._engine._process_order(order)
 
     assert result.accepted is True
     assert result.fills == []
@@ -353,14 +353,14 @@ def test_fee_pool_accumulates_across_multiple_fills() -> None:
     gateway = ExchangeGateway()
 
     # Trade 1
-    gateway.submit_order(Order(order_id="s1", owner_id="m1", side=Side.SELL, price=1000, quantity=100_000_000))
-    gateway.submit_order(Order(order_id="b1", owner_id="t1", side=Side.BUY,  price=1000, quantity=100_000_000))
+    gateway._engine._process_order(Order(order_id="s1", owner_id="m1", side=Side.SELL, price=1000, quantity=100_000_000))
+    gateway._engine._process_order(Order(order_id="b1", owner_id="t1", side=Side.BUY,  price=1000, quantity=100_000_000))
 
     assert gateway.get_fee_pool() == 50_000_000
 
     # Trade 2
-    gateway.submit_order(Order(order_id="s2", owner_id="m2", side=Side.SELL, price=1000, quantity=100_000_000))
-    gateway.submit_order(Order(order_id="b2", owner_id="t2", side=Side.BUY,  price=1000, quantity=100_000_000))
+    gateway._engine._process_order(Order(order_id="s2", owner_id="m2", side=Side.SELL, price=1000, quantity=100_000_000))
+    gateway._engine._process_order(Order(order_id="b2", owner_id="t2", side=Side.BUY,  price=1000, quantity=100_000_000))
 
     assert gateway.get_fee_pool() == 100_000_000
 
@@ -388,11 +388,11 @@ def test_taker_fills_across_two_price_levels() -> None:
     fee_pool = 75_250_000
     """
     gateway = ExchangeGateway()
-    gateway.submit_order(Order(order_id="s1", owner_id="m1", side=Side.SELL, price=1010, quantity=100_000_000))
-    gateway.submit_order(Order(order_id="s2", owner_id="m2", side=Side.SELL, price=1000, quantity=100_000_000))
+    gateway._engine._process_order(Order(order_id="s1", owner_id="m1", side=Side.SELL, price=1010, quantity=100_000_000))
+    gateway._engine._process_order(Order(order_id="s2", owner_id="m2", side=Side.SELL, price=1000, quantity=100_000_000))
 
     taker = Order(order_id="b1", owner_id="taker_1", side=Side.BUY, price=1010, quantity=150_000_000)
-    result = gateway.submit_order(taker)
+    result = gateway._engine._process_order(taker)
 
     assert result.accepted is True
     assert len(result.fills) == 2
