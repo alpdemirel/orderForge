@@ -2,8 +2,19 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Any, Callable
+import heapq
+
 from exchange.models import AccountState, ExecutionResult, Fill, Order, OrderStatus, Side, TimeInForce
 from exchange.order_book import OrderBook
+
+@dataclass(order=True)
+class QueuedEvent:
+    target_ts_ns: int
+    action: Callable = field(compare=False)
+    args: tuple = field(default_factory=tuple, compare=False)
+    kwargs: dict = field(default_factory=dict, compare=False)
 
 
 class ExchangeEngine:
@@ -16,8 +27,35 @@ class ExchangeEngine:
         self.book = OrderBook()
         self._accounts: dict[str, AccountState] = {}
         self._fee_pool: int = 0
+        
+        # Discrete-Event Simulation Queue
+        self.current_time_ns: int = 0
+        self.event_queue: list[QueuedEvent] = []
 
-    def submit_order(self, order: Order) -> ExecutionResult:
+    def schedule_event(self, target_ts_ns: int, action: Callable, *args: Any, **kwargs: Any) -> None:
+        """Pushes an event to the Min-Heap to be executed at target_ts_ns."""
+        heapq.heappush(self.event_queue, QueuedEvent(target_ts_ns, action, args, kwargs))
+
+    def tick(self, target_ts_ns: int) -> None:
+        """
+        Advances the exchange clock to target_ts_ns.
+        Executes any queued events whose target time has been reached.
+        """
+        self.current_time_ns = target_ts_ns
+        while self.event_queue and self.event_queue[0].target_ts_ns <= self.current_time_ns:
+            event = heapq.heappop(self.event_queue)
+            event.action(*event.args, **event.kwargs)
+
+    def submit_order(self, order: Order, estimated_exchange_ts: int = 0) -> None:
+        """
+        Queues an order to be executed at the simulated `estimated_exchange_ts`.
+        ExecutionResult is handled asynchronously via callbacks in strategy (in future phases).
+        For now, this modifies the internal state when tick() reaches the timestamp.
+        """
+        target_ts = max(self.current_time_ns, estimated_exchange_ts)
+        self.schedule_event(target_ts, self._process_order, order)
+
+    def _process_order(self, order: Order) -> ExecutionResult:
         if order.quantity <= 0:
             order.status = OrderStatus.REJECTED
             return ExecutionResult(False, reason="quantity_must_be_positive")

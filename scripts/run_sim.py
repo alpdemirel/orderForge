@@ -30,11 +30,12 @@ def run_simulation() -> None:
     print(f"[run_sim] Current latency estimate: {strategy.current_latency_estimate}ms")
 
     print("[run_sim] Submitting a sample buy order through the strategy...")
-    result = strategy.submit_order(price=70_000, side="buy", amount=1, order_type="GTC")
+    strategy.submit_order(price=70_000, side="buy", amount=1, order_type="GTC")
 
-    print("\n[run_sim] Exchange returned result:")
-    print(f"  accepted={result.accepted}")
-    print(f"  num_fills={len(result.fills)}")
+    print(f"\n[run_sim] Advancing exchange time to allow order to land...")
+    # The estimated exchange timestamp calculated by the strategy is local_ts + latency (1015 + (1015 - 1000) = 1030)
+    # So the order is queued to execute at 1030. Let's tick() past that.
+    gateway._engine.tick(1035)
 
     print("\n--- INTERNAL EXCHANGE STATE (ORDER BOOK CHECK) ---")
     # For debugging only: inspect the engine's internal order book

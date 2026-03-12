@@ -12,8 +12,8 @@ class ExchangeGateway:
     def __init__(self, engine: ExchangeEngine | None = None) -> None:
         self._engine = engine or ExchangeEngine()
 
-    def submit_order(self, order: Order) -> ExecutionResult:
-        return self._engine.submit_order(order)
+    def submit_order(self, order: Order, estimated_exchange_ts: int = 0) -> None:
+        return self._engine.submit_order(order, estimated_exchange_ts)
 
     def cancel_order(self, order_id: str) -> bool:
         return self._engine.cancel_order(order_id)

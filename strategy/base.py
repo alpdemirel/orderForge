@@ -86,4 +86,5 @@ class BaseStrategy(ABC):
         )
 
         # Call the correct function on the exchange adapter/gateway
-        return self.exchange.submit_order(order)
+        # Send the `estimated_exchange_ts` so the engine can land this order accurately in the future
+        return self.exchange.submit_order(order, estimated_exchange_ts=estimated_exchange_ts)
