@@ -64,6 +64,20 @@ class ExchangeEngine:
     def get_fee_pool(self) -> int:
         return self._fee_pool
 
+    def apply_market_event(self, event) -> None:
+        """Apply a Bitfinex L3 MarketEvent to the passive order book."""
+        self._get_applicator().apply(event)
+
+    def apply_s3_snapshot(self, snapshot_data: dict) -> None:
+        """Seed the book from an S3 snapshot_HHMMSS.log dict."""
+        self._get_applicator().apply_s3_snapshot(snapshot_data)
+
+    def _get_applicator(self):
+        if not hasattr(self, "_market_event_applicator"):
+            from exchange.market_event_applicator import MarketEventApplicator
+            self._market_event_applicator = MarketEventApplicator(self.book)
+        return self._market_event_applicator
+
     def _would_cross(self, order: Order) -> bool:
         best_ask = self.book.best_ask()
         best_bid = self.book.best_bid()

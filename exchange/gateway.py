@@ -27,3 +27,11 @@ class ExchangeGateway:
     def get_fee_pool(self) -> int:
         return self._engine.get_fee_pool()
 
+    def apply_market_event(self, event) -> None:
+        """Feed a Bitfinex L3 MarketEvent into the book via the engine."""
+        self._engine.apply_market_event(event)
+
+    def apply_s3_snapshot(self, snapshot_data: dict) -> None:
+        """Seed the book from an S3 snapshot_HHMMSS.log dict."""
+        self._engine.apply_s3_snapshot(snapshot_data)
+
