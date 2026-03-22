@@ -1,0 +1,9 @@
+[Unit]
+Description=OrderForge Data Capture Health Check
+After=network.target
+
+[Service]
+Type=oneshot
+User=ec2-user
+WorkingDirectory=/home/ec2-user/orderforge
+ExecStart=/home/ec2-user/orderforge/.venv/bin/python scripts/health_check.py /home/ec2-user/orderforge/data
