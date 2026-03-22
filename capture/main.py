@@ -30,8 +30,9 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
+import tarfile
+import shutil
 from pathlib import Path
-
 try:
     import boto3
 except ModuleNotFoundError:  # pragma: no cover - optional runtime dependency
@@ -86,22 +87,78 @@ def snapshot_path(base_dir: Path, utc_date: str, utc_time: str) -> Path:
 
 # ── S3 upload ─────────────────────────────────────────────────────────────────
 def upload_to_s3(local_path: Path, s3_key: str) -> None:
-    """Best-effort S3 upload. Logs errors but never raises."""
+    """Best-effort S3 upload. Raises exception on failure so caller can handle it."""
     if not S3_BUCKET:
+        log.info(f"S3_BUCKET not set. Would have uploaded {local_path} to {s3_key}")
         return
     if boto3 is None:
         log.warning("boto3 not installed; skipping S3 upload.")
         return
-    try:
-        s3 = boto3.client("s3")
-        s3.upload_file(str(local_path), S3_BUCKET, s3_key)
-        log.info(f"Uploaded {local_path} -> s3://{S3_BUCKET}/{s3_key}")
-    except Exception as exc:
-        log.error(f"S3 upload failed for {local_path}: {exc}")
+    s3 = boto3.client("s3")
+    s3.upload_file(str(local_path), S3_BUCKET, s3_key)
+    log.info(f"Uploaded {local_path} -> s3://{S3_BUCKET}/{s3_key}")
 
 
 def make_s3_key(filename: str, utc_date: str) -> str:
     return f"{S3_PREFIX}/{utc_date}/{filename}"
+
+
+def archive_previous_day(base_dir: Path, date_str: str) -> None:
+    """
+    Compresses the daily folder, uploads to S3, and deletes the local folder to save space.
+    Run in a background thread to prevent blocking the websocket loop.
+    """
+    day_dir = base_dir / date_str
+    if not day_dir.exists() or not day_dir.is_dir():
+        return
+
+    tar_path = base_dir / f"{date_str}.tar.gz"
+    
+    try:
+        # Create the tar.gz file
+        log.info(f"Compressing {day_dir} -> {tar_path}")
+        with tarfile.open(tar_path, "w:gz") as tar:
+            tar.add(day_dir, arcname=date_str)
+            
+        # Upload the compressed file to S3
+        s3_key = make_s3_key(f"{date_str}.tar.gz", date_str)
+        upload_to_s3(tar_path, s3_key)
+        
+        # Cleanup the local tar file ONLY if upload succeeded
+        log.info(f"Upload successful. Removing local archive for {date_str}...")
+        tar_path.unlink(missing_ok=True)
+        
+        # Now clean up old directories (older than 24 hours / 1 day)
+        clean_old_directories(base_dir)
+        
+    except Exception as exc:
+        log.error(f"Archive process failed for {date_str}: {exc}")
+
+
+def clean_old_directories(base_dir: Path) -> None:
+    """
+    Deletes directories in base_dir that are older than 1 day from the current UTC date.
+    """
+    try:
+        now_utc = datetime.now(timezone.utc)
+        retention_days = 1
+        
+        for item in base_dir.iterdir():
+            if item.is_dir():
+                try:
+                    # Expect foldernames like YYYY-MM-DD
+                    folder_date = datetime.strptime(item.name, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                    age_days = (now_utc - folder_date).days
+                    
+                    if age_days > retention_days:
+                        log.info(f"Cleaning up 24h+ old local directory: {item}")
+                        shutil.rmtree(item)
+                except ValueError:
+                    # Ignore folders that don't match the date format
+                    continue
+    except Exception as e:
+        log.error(f"Failed to clean old directories: {e}")
+
 
 
 # ── Bitfinex subscription helpers ─────────────────────────────────────────────
@@ -194,10 +251,9 @@ async def file_writer(
             # ── UTC midnight rotation ──────────────────────────────────────────
             if now_date != current_date:
                 file_handle.close()
-                # Upload rotated file to S3
-                s3_key = make_s3_key("events.log", current_date)
+                # Compress, upload, and cleanup the old day in the background
                 asyncio.get_event_loop().run_in_executor(
-                    None, upload_to_s3, current_file_path, s3_key
+                    None, archive_previous_day, base_dir, current_date
                 )
                 current_date = now_date
                 current_file_path = event_log_path(base_dir, current_date)
@@ -245,7 +301,10 @@ async def snapshot_writer(
 
             # Upload snapshot to S3
             s3_key = make_s3_key(f"snapshot_{utc_time}.log", utc_date)
-            upload_to_s3(snap_path, s3_key)
+            try:
+                upload_to_s3(snap_path, s3_key)
+            except Exception as e:
+                log.error(f"Failed to upload snapshot {snap_path} to S3: {e}")
 
             snapshot_queue.task_done()
         except asyncio.CancelledError:
