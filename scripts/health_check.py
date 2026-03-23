@@ -7,6 +7,7 @@ import urllib.parse
 from pathlib import Path
 from datetime import datetime, timezone
 import logging
+import boto3
 
 logging.basicConfig(
     filename="health_alarm.log",
@@ -15,27 +16,18 @@ logging.basicConfig(
 )
 
 def send_alert(message: str) -> None:
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if bot_token and chat_id:
+    sns_topic_arn = os.getenv("AWS_SNS_TOPIC_ARN")
+    if sns_topic_arn:
         try:
-            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            data = urllib.parse.urlencode({"chat_id": chat_id, "text": message}).encode("utf-8")
-            req = urllib.request.Request(url, data=data, method="POST")
-            urllib.request.urlopen(req, timeout=10)
-            logging.info("Sent Telegram alert.")
+            sns = boto3.client('sns', region_name=os.getenv("AWS_REGION", "eu-central-1"))
+            sns.publish(
+                TopicArn=sns_topic_arn,
+                Message=message,
+                Subject="OrderForge EC2 ALARM"
+            )
+            logging.info("Sent AWS SNS email alert.")
         except Exception as e:
-            logging.error(f"Failed to send Telegram alert: {e}")
-
-    webhook_url = os.getenv("ALERT_WEBHOOK_URL")
-    if webhook_url:
-        try:
-            data = json.dumps({"content": message, "text": message}).encode("utf-8")
-            req = urllib.request.Request(webhook_url, data=data, headers={"Content-Type": "application/json"}, method="POST")
-            urllib.request.urlopen(req, timeout=10)
-            logging.info("Sent Webhook alert.")
-        except Exception as e:
-            logging.error(f"Failed to send Webhook alert: {e}")
+            logging.error(f"Failed to send AWS SNS alert: {e}")
 
 def check_health(base_dir: Path, max_age_seconds: int = 300) -> None:
     now_utc = datetime.now(timezone.utc)
