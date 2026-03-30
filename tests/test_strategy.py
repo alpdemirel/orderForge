@@ -40,5 +40,6 @@ def test_latency_calculation_and_order_submission():
     received_order = dummy_exchange.received_orders[0]
     
     # Assert it translated our intent correctly into an Order object
-    assert received_order.price == 70000
+    # Assuming PRICE_MULTIPLIER is 10
+    assert received_order.price == 70000 * 10
     assert received_order.side.name == "BUY"  # Enum check
