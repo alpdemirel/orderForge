@@ -2,7 +2,7 @@ import uuid
 from abc import ABC, abstractmethod
 
 from exchange import Order, Side, TimeInForce
-from exchange.models import QUANTITY_MULTIPLIER
+from exchange.models import QUANTITY_MULTIPLIER, PRICE_MULTIPLIER
 
 class BaseStrategy(ABC):
     """
@@ -72,6 +72,7 @@ class BaseStrategy(ABC):
 
         # Convert the human-friendly quantity into the engine's fixed-point integer units using QUANTITY_MULTIPLIER
         quantity = int(amount * QUANTITY_MULTIPLIER)
+        price_int = int(price * PRICE_MULTIPLIER)
         
         # Create a unique ID for each order
         order_id = f"strat_order_{uuid.uuid4().hex[:8]}"
@@ -80,7 +81,7 @@ class BaseStrategy(ABC):
         order = Order(
             order_id=order_id,
             side=side_enum,
-            price=price,
+            price=price_int,
             quantity=quantity,
             tif=tif
         )
