@@ -4,6 +4,7 @@ Reference: High-frequency trading in a limit order book (Avellaneda & Stoikov, 2
 """
 import math
 import time
+import uuid
 from collections import deque
 from strategy.base import BaseStrategy
 from exchange.models import Side, QUANTITY_MULTIPLIER
@@ -51,6 +52,9 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         self._session_start: float = time.monotonic()
         self._session_duration: float = session_duration   # seconds (or normalised units)
 
+        # Active order tracking for cancel-replace cycle
+        self._active_order_ids: list[str] = []
+
     # Internal helpers
     
     def _time_left(self) -> float:
@@ -80,6 +84,14 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         mean = sum(log_returns) / len(log_returns)
         variance = sum((r - mean) ** 2 for r in log_returns) / len(log_returns)
         self.sigma = math.sqrt(variance)
+
+    def _cancel_active_orders(self) -> None:
+        """Cancel all outstanding strategy quotes on the exchange."""
+        if self.exchange is None:
+            return
+        for oid in self._active_order_ids:
+            self.exchange.cancel_order(oid)
+        self._active_order_ids.clear()
 
     # Core AS formulas
     
@@ -135,11 +147,18 @@ class AvellanedaStoikovStrategy(BaseStrategy):
 
         bid_price, ask_price = self.calculate_quotes(mid_price)
 
-        # TODO: cancel existing orders, submit new bid/ask limit orders
-        # Example (adjust to your exchange API):
-        #   self.cancel_all_orders()
-        #   self.submit_limit_order(Side.BUY,  bid_price, self.order_size)
-        #   self.submit_limit_order(Side.SELL, ask_price, self.order_size)
+        # Cancel previous quotes before placing new ones
+        self._cancel_active_orders()
+
+        # Generate trackable order IDs
+        bid_id = f"as_bid_{uuid.uuid4().hex[:8]}"
+        ask_id = f"as_ask_{uuid.uuid4().hex[:8]}"
+
+        # Submit new bid/ask limit orders
+        self.submit_order(bid_price, "buy", self.order_size, order_id=bid_id)
+        self.submit_order(ask_price, "sell", self.order_size, order_id=ask_id)
+
+        self._active_order_ids = [bid_id, ask_id]
 
     def on_order_fill(self, fill_event) -> None:
         """
