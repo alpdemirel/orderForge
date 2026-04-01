@@ -48,7 +48,7 @@ class BaseStrategy(ABC):
         """
         pass
 
-    def submit_order(self, price, side, amount, order_type="GTC"):
+    def submit_order(self, price, side, amount, order_type="GTC", order_id=None):
         """
         Gateway method for the strategy to send orders to the exchange.
         Automatically converts strategy-level intent into the engine's native Order object.
@@ -74,8 +74,9 @@ class BaseStrategy(ABC):
         quantity = int(amount * QUANTITY_MULTIPLIER)
         price_int = int(price * PRICE_MULTIPLIER)
         
-        # Create a unique ID for each order
-        order_id = f"strat_order_{uuid.uuid4().hex[:8]}"
+        # Create a unique ID for each order (or use the provided one)
+        if order_id is None:
+            order_id = f"strat_order_{uuid.uuid4().hex[:8]}"
 
         # Prepare the concrete Order object expected by Bora's matching engine
         order = Order(

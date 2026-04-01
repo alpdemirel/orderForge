@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Iterable, Optional, Protocol
 
 from exchange import ExchangeGateway
-from exchange.models import ExecutionResult, Fill, Order
+from exchange.models import AccountState, ExecutionResult, Fill, Order
 
 
 class FillListener(Protocol):
