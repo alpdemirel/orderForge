@@ -79,6 +79,30 @@ def get_actual_top_of_book(snapshot_path: Path) -> Tuple[float, float]:
         return 0.0, float('inf')
 
 
+def load_full_book_from_snapshot(snapshot_path: Path) -> Tuple[Dict[int, float], Dict[int, float]]:
+    """Reads all orders from a snapshot and reconstructs the full L3 state dictionary."""
+    try:
+        with open(snapshot_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            
+        bids = {}
+        asks = {}
+        for order_id, info in data.items():
+            price = float(info["price"])
+            amount = float(info["amount"])
+            
+            if amount > 0:
+                bids[int(order_id)] = price
+            elif amount < 0:
+                asks[int(order_id)] = price
+                
+        return bids, asks
+        
+    except Exception as e:
+        logger.error(f"Failed to read/parse snapshot for full sync {snapshot_path}: {e}")
+        return {}, {}
+
+
 def main():
     parser = argparse.ArgumentParser(description="Snapshot Comparison Framework for L3 Book Accuracy")
     parser.add_argument("data_dir", type=str, help="Path to the daily data directory (e.g., capture/2024-05-15)")
@@ -153,6 +177,15 @@ def main():
                 if not ask_match:
                     logger.error(f"    Ask: Reconstructed = {recon_ask}, Actual = {actual_ask}")
             
+            # --- PERIODIC SEEDING (Resync Book to True Source) ---
+            # Prevents cascading failures that drift throughout the 24-hour log
+            new_bids, new_asks = load_full_book_from_snapshot(snap_path)
+            if new_bids or new_asks:
+                bids.clear()
+                bids.update(new_bids)
+                asks.clear()
+                asks.update(new_asks)
+                
             snapshot_idx += 1
 
         # Now apply the event to our internal book
