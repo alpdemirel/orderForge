@@ -44,35 +44,90 @@ Once the capture service is running with a valid IAM role, data is uploaded to:
 s3://orderforge-s3-bucket/bitfinex/btcusd/YYYY-MM-DD/
 ```
 
-### Prerequisites
+Ask the Capture Engineer (Person A) for your IAM access key ID and secret access key before starting.
 
-1. **AWS CLI** installed: `pip install awscli`
-2. **AWS credentials** configured. Ask the Capture Engineer (Person A) for:
-   - An IAM user with read-only S3 access, or
-   - Access key ID + secret access key for the bucket
+---
 
-### Configure AWS CLI (one time)
+### Step 1 — Install AWS CLI
 
+#### Ubuntu / Debian
 ```bash
-aws configure
-# Enter: Access Key ID, Secret Access Key, region (eu-central-1)
+pip install awscli --break-system-packages
 ```
 
-### Download commands
+#### macOS
+```bash
+pip3 install awscli
+```
+Or with Homebrew:
+```bash
+brew install awscli
+```
+
+#### Windows (PowerShell)
+Download and run the official MSI installer:
+```
+https://awscli.amazonaws.com/AWSCLIV2.msi
+```
+Or with winget:
+```powershell
+winget install Amazon.AWSCLI
+```
+
+---
+
+### Step 2 — Configure credentials (one time)
+
+#### Ubuntu / macOS
+```bash
+aws configure
+# AWS Access Key ID: <your key>
+# AWS Secret Access Key: <your secret>
+# Default region name: eu-central-1
+# Default output format: json
+```
+
+#### Windows (PowerShell)
+```powershell
+aws configure
+# AWS Access Key ID: <your key>
+# AWS Secret Access Key: <your secret>
+# Default region name: eu-central-1
+# Default output format: json
+```
+
+---
+
+### Step 3 — Download data
+
+#### Ubuntu / macOS
 
 ```bash
 # List available days
-aws s3 ls s3://orderforge-s3-bucket/bitfinex/btcusd/ --recursive
+aws s3 ls s3://orderforge-s3-bucket/bitfinex/btcusd/
 
-# Download a single day's events.log
-aws s3 cp s3://orderforge-s3-bucket/bitfinex/btcusd/2026-03-11/events.log ./data/2026-03-11/
+# Create local folder and download a full day (events.log + snapshots)
+mkdir -p data/2026-03-15
+aws s3 sync s3://orderforge-s3-bucket/bitfinex/btcusd/2026-03-15/ data/2026-03-15/
 
-# Download all files for a day (events.log + snapshots)
-aws s3 sync s3://orderforge-s3-bucket/bitfinex/btcusd/2026-03-11/ ./data/2026-03-11/
+# Download only events.log for a day
+mkdir -p data/2026-03-15
+aws s3 cp s3://orderforge-s3-bucket/bitfinex/btcusd/2026-03-15/events.log data/2026-03-15/events.log
+```
 
-# Download to project data folder
-mkdir -p data/2026-03-11
-aws s3 sync s3://orderforge-s3-bucket/bitfinex/btcusd/2026-03-11/ ./data/2026-03-11/
+#### Windows (PowerShell)
+
+```powershell
+# List available days
+aws s3 ls s3://orderforge-s3-bucket/bitfinex/btcusd/
+
+# Create local folder and download a full day (events.log + snapshots)
+New-Item -ItemType Directory -Force -Path data\2026-03-15
+aws s3 sync s3://orderforge-s3-bucket/bitfinex/btcusd/2026-03-15/ data\2026-03-15\
+
+# Download only events.log for a day
+New-Item -ItemType Directory -Force -Path data\2026-03-15
+aws s3 cp s3://orderforge-s3-bucket/bitfinex/btcusd/2026-03-15/events.log data\2026-03-15\events.log
 ```
 
 ### Where to put it locally
@@ -82,10 +137,12 @@ Use the project's `data/` folder so the market_data module can find it:
 ```
 orderForge/
   data/
-    2026-03-11/
+    2026-03-15/
       events.log
       snapshot_162715.log   (if any)
 ```
+
+> `data/` is in `.gitignore` — these files will never be committed to the repository.
 
 ---
 
@@ -93,23 +150,32 @@ orderForge/
 
 Use this if S3 uploads are not working yet or you need data before the next upload.
 
-### Prerequisites
+**Prerequisites:** SSH key (`.pem` file) and EC2 public IP — ask Person A.
 
-- SSH key (`.pem` file) — ask Person A
-- EC2 public IP — ask Person A or check AWS Console → EC2 → Instances
+### Copy a full day's data
 
-### Copy a day's data
-
+#### Ubuntu / macOS
 ```bash
-# Replace with your actual key path and EC2 IP
-scp -i ~/Desktop/orderforge-key.pem -r ec2-user@3.121.130.22:~/orderforge/data/2026-03-11/ ./data/2026-03-11/
+scp -i ~/Desktop/orderforge-key.pem -r ec2-user@<EC2_IP>:~/orderforge/data/2026-03-15/ ./data/2026-03-15/
+```
+
+#### Windows (PowerShell)
+```powershell
+scp -i $HOME\Desktop\orderforge-key.pem -r ec2-user@<EC2_IP>:~/orderforge/data/2026-03-15/ .\data\2026-03-15\
 ```
 
 ### Copy only events.log
 
+#### Ubuntu / macOS
 ```bash
-mkdir -p data/2026-03-11
-scp -i ~/Desktop/orderforge-key.pem ec2-user@3.121.130.22:~/orderforge/data/2026-03-11/events.log ./data/2026-03-11/
+mkdir -p data/2026-03-15
+scp -i ~/Desktop/orderforge-key.pem ec2-user@<EC2_IP>:~/orderforge/data/2026-03-15/events.log ./data/2026-03-15/
+```
+
+#### Windows (PowerShell)
+```powershell
+New-Item -ItemType Directory -Force -Path data\2026-03-15
+scp -i $HOME\Desktop\orderforge-key.pem ec2-user@<EC2_IP>:~/orderforge/data/2026-03-15/events.log .\data\2026-03-15\
 ```
 
 ---
