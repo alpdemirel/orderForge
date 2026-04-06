@@ -78,3 +78,108 @@ In the actual stream:
 - `exchange_ts_ns` represents the actual physical occurrence time at Bitfinex.
 
 The mapping ensures that the normalized operations (`add` or `cancel`) are applied at the precise chronological point in the discrete-event clock.
+
+Every captured market update message carries both timestamps in the raw log line:
+
+```
+<local_ts_ns>|<channel>|<raw_json>
+```
+
+`local_ts_ns` is stamped by the capture process on the EC2 host the instant the WebSocket frame is received (before any parsing). The exchange timestamp is extracted from the payload during replay. Because the EC2 instance is colocated in the same AWS region and AZ as Bitfinex's matching engine, the two clocks are tightly synchronized and cross-clock comparisons are valid with sub-millisecond drift.
+
+---
+
+## 5. Latency Emulation Model (Hist → Prod Parity)
+
+### 5.1  Production flow (reference)
+
+In live trading the data flow is:
+
+```
+exchange ─[md update]→ strategy ─[order / cancel]→ exchange ─[ack / fill]→ strategy
+```
+
+Concretely:
+
+1. The MD receiver receives a market data update from the exchange, parses it, and forwards it to the strategy. *(MD receiver and strategy are assumed to run in the same process for simplicity; the process topology on the same box does not materially affect the hist model.)*
+2. The strategy receives the update, does calculations, and submits new orders or cancels to the exchange via the OGW. *(OGW and strategy are likewise assumed to be the same process.)*
+3. The exchange receives the request, matches or places it on the book, and sends an acknowledgement back.
+4. The strategy receives the ack asynchronously and updates its internal state.
+
+The primary trading loop is driven by market data updates; everything else is a consequence of step 1.
+
+### 5.2  The strategy's internal clock
+
+From the strategy's point of view **`local_ts` is "now"**. Every time the strategy receives a new market data update it sets its internal clock:
+
+```python
+self.current_local_ts = event.local_ts_ms   # set at top of on_market_update()
+```
+
+All timestamps the strategy reasons about (order urgency, quoting spread, risk windows) are relative to this value.
+
+### 5.3  Latency prediction
+
+Each tick the strategy observes:
+
+```
+observed_latency_ms = local_ts - exchange_ts   # exchange → strategy one-way latency
+```
+
+This is the latency for the **inbound** leg. The strategy assumes the **outbound** leg (strategy → exchange) will have the same latency on the next tick — a reasonable first-order approximation because exchange and network latencies are highly autocorrelated:
+
+```python
+self.predicted_latency_ms = self.current_local_ts - event.exchange_ts_ms
+```
+
+### 5.4  Order landing timestamp
+
+When the strategy submits an order, the estimated exchange landing time is:
+
+```
+landing_ts_ms = current_local_ts + predicted_latency_ms
+```
+
+**Example:**
+
+| Step | Value |
+|------|-------|
+| Exchange sends MD update | `exchange_ts = 100 ms` |
+| Strategy receives it | `local_ts = 110 ms` |
+| Observed latency | `110 − 100 = 10 ms` |
+| Strategy clock | `current_local_ts = 110 ms` |
+| Strategy submits order | — |
+| Predicted landing time | `110 + 10 = 120 ms` |
+
+The order must "land" at the exchange at `exchange_ts = 120 ms`, not at `110 ms`.
+
+### 5.5  Exchange simulator heap
+
+To emulate this, the exchange simulator maintains a **min-heap of pending strategy orders keyed by `landing_ts_ms`**:
+
+```
+heap entries: (landing_ts_ms, seq, order)
+```
+
+On each replay tick, the Replayer calls `LatencyQueue.drain(current_exch_ts_ms)` **before** applying any book mutations for that tick. `drain()` pops and lands every order whose `landing_ts_ms ≤ current_exch_ts_ms`:
+
+```python
+while heap and heap[0].landing_ts_ms <= current_exch_ts_ms:
+    order = heapq.heappop(heap)
+    exchange.submit_order(order)
+```
+
+This ensures strategy orders are visible to the matching engine at the correct simulated time, not at submission time.
+
+Cancels of **in-flight** orders (submitted but not yet landed) are discarded without latency — the cancel races the order before it leaves the local process. Cancels of **already-landed** resting orders travel through a separate cancel heap with the same one-way predicted latency, since the cancel request must traverse the same network path.
+
+Ack delivery back to the strategy fires immediately after `submit_order` returns. Ack latency is less critical to model correctly than order-landing latency, because the strategy's next meaningful action is gated on the next market data update, not the ack.
+
+### 5.6  Implementation references
+
+| Component | File |
+|-----------|------|
+| Latency queue (heap + drain) | `sim/latency_queue.py` |
+| Pipeline wiring | `sim/main.py` — `build_pipeline()` |
+| Strategy clock update | `strategy/avellaneda_stoikov.py` — `on_market_update()` |
+| Replayer drain call | `market_data/replayer.py` — `run()` tick loop |
