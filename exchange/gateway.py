@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from exchange.engine import ExchangeEngine
-from exchange.models import AccountState, ExecutionResult, Order
+from exchange.models import AccountState, ExecutionResult, Fill, Order
 
 
 class ExchangeGateway:
@@ -27,9 +27,9 @@ class ExchangeGateway:
     def get_fee_pool(self) -> int:
         return self._engine.get_fee_pool()
 
-    def apply_market_event(self, event) -> None:
+    def apply_market_event(self, event) -> list[Fill]:
         """Feed a Bitfinex L3 MarketEvent into the book via the engine."""
-        self._engine.apply_market_event(event)
+        return self._engine.apply_market_event(event)
 
     def apply_s3_snapshot(self, snapshot_data: dict) -> None:
         """Seed the book from an S3 snapshot_HHMMSS.log dict."""
