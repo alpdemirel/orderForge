@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "orderforge"
 version = "0.1.0"
-description = "OrderForge Python-first monorepo scaffold"
+description = "Deterministic L3 market simulation pipeline for backtesting strategies on Bitfinex BTC-USD"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [ "websockets>=12.0",  

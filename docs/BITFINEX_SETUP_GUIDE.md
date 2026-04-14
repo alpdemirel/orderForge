@@ -79,12 +79,14 @@ After a few seconds, check the file:
 head -5 data/2026-03-08/events.log
 ```
 
-You should see lines like:
+You should see lines like (dual-timestamp format):
 ```
-1741600802123456789|bf_subscribed|{"event":"subscribed","channel":"book",...}
-1741600802234567890|bf_snapshot|[123456,[...]]
-1741600802345678901|bf_update|[123456,12345678901,43250.5,0.5]
+1741600802123456789|0|bf_subscribed|{"event":"subscribed","channel":"book",...}
+1741600802234567890|1741600802229000000000|bf_snapshot|[123456,[...]]
+1741600802345678901|1741600802340000000000|bf_update|[123456,12345678901,43250.5,0.5]
 ```
+
+The second field is `exchange_ts_ns` — the real exchange timestamp obtained via the TIMESTAMP conf flag (32768). For subscription/info events it is 0; for snapshots and updates it carries the exchange event time in nanoseconds.
 
 Stop with Ctrl-C. If this works, your capture code is correct.
 
@@ -391,7 +393,8 @@ To reconstruct the full order book from a day's events:
 **Tan (Market Data, Person B):**
 - Use `market_data/reader.py` helpers (`extract_bitfinex_snapshot_orders`, `extract_bitfinex_update`)
 - Build the replay engine that reads day files from S3 or local
-- Key ordering rule for Bitfinex: use `local_ts_ns` as primary sort key (Bitfinex does not provide exchange sequence numbers in the R0 feed, only order IDs)
+- Key ordering rule for Bitfinex: use `local_ts_ns` as primary sort key (file order = capture order)
+- Real exchange timestamps are now available via the TIMESTAMP conf flag (32768) — used for latency estimation, not ordering
 - Handle the "find earliest snapshot, then apply updates" replay pattern described in Part 7
 
 **Bora (Exchange, Person C):**
@@ -399,8 +402,8 @@ To reconstruct the full order book from a day's events:
 - The `order_id` from Bitfinex maps cleanly to your `Order.order_id` field (it's a numeric string)
 
 **Mehmet Kaan (Integration, Person D):**
-- Fix the `base.py` bug: `self.exchange.receive_order(...)` → `self.exchange.submit_order(order)` (the gateway method is `submit_order`, not `receive_order`)
 - Write integration tests using sample `bf_snapshot` + `bf_update` event files as fixtures
+- Maintain end-to-end pipeline tests in `tests/`
 
 ---
 

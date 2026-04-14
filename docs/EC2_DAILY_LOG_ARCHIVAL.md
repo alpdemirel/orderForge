@@ -1,32 +1,46 @@
 # Compressing and Archiving Daily Logs
 
-The goal is to modify the `capture/main.py` script so that when a day ends and a new daily folder is created:
+**Status: IMPLEMENTED** (in `capture/main.py` since March 2026)
+
+When a day ends and a new daily folder is created:
 1. The previous day's folder is compressed into a single `.tar.gz` file.
 2. The compressed `.tar.gz` file is uploaded to the S3 bucket.
-3. The original uncompressed daily folder on the local EC2 server is deleted to save space.
+3. The local `.tar.gz` is deleted after successful upload.
+4. Local directories older than 1 day are cleaned up automatically.
 
-## Proposed Changes
+## Implementation details
 
-### [MODIFY] `capture/main.py`
-We need to update the file rotation logic and add archiving logic.
+### `archive_previous_day(base_dir, date_str)` in `capture/main.py`
 
-- **Import additions:** Add `tarfile` and `shutil` (for creating tar archives and deleting directories).
-- **Update `file_writer`:**
-  - Currently, when `now_date != current_date`, it closes the daily `events.log` and uploads it to S3 immediately.
-  - We will modify this so that when the day rotates, it delegates the cleanup of the *previous* day's folder to an asynchronous background task, so we don't block the WebSocket listener from capturing new events.
-- **New `archive_previous_day` function:**
-  - Compress the entire `base_dir / current_date` folder into `base_dir / current_date.tar.gz`.
-  - Upload the `.tar.gz` file to S3 using a new `boto3` helper (`upload_to_s3`).
-  - Use `shutil.rmtree` to delete the local `{base_dir}/{current_date}` folder.
-  - Optionally, delete the local `.tar.gz` file after a successful S3 upload, or keep it depending on requirements (deleting is better for space).
+Called via `run_in_executor()` at UTC midnight rotation so the WebSocket listener is not blocked.
 
-## Verification Plan
+Steps:
+1. Compress the entire `base_dir / date_str` folder into `base_dir / date_str.tar.gz`
+2. Upload the `.tar.gz` file to S3 using `upload_to_s3()`
+3. Delete the local `.tar.gz` after successful upload
+4. Call `clean_old_directories()` to remove folders older than 1 day
 
-### Automated Tests
-- Run `pytest` to ensure no existing logic was broken (e.g. `test_capture_writer.py` and `test_capture_format.py` might need minor updates if they assert specific file uploads).
+### `clean_old_directories(base_dir)` in `capture/main.py`
 
-### Manual Verification
-- We can run the capture script locally, simulate a day change by temporarily modifying the date logic, and observe if:
-  - The previous folder is compressed into a `.tar.gz` file.
-  - The uncompressed folder is deleted.
-  - S3 upload is triggered for the `.tar.gz` file (this will just print an info log locally without the S3 variable).
+Iterates over directories in `base_dir`, parses folder names as `YYYY-MM-DD` dates, and removes
+any that are more than 1 day old from the current UTC date.
+
+### Trigger point
+
+In `file_writer()`, when `now_date != current_date` (UTC midnight crossing):
+
+```python
+asyncio.get_event_loop().run_in_executor(
+    None, archive_previous_day, base_dir, current_date
+)
+```
+
+This runs the compression/upload/cleanup in a background thread, non-blocking.
+
+### S3 key format
+
+```
+s3://<S3_BUCKET>/<S3_PREFIX>/YYYY-MM-DD/YYYY-MM-DD.tar.gz
+```
+
+Example: `s3://orderforge-s3-bucket/bitfinex/btcusd/2026-04-14/2026-04-14.tar.gz`

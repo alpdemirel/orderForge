@@ -74,7 +74,7 @@ OrderForge treats all market data as `Order` objects owned by the special `MARKE
 ## 4. Time Synchronization (Dual-Timestamps)
 All the above mappings happen under the hood of `MarketEvent` routing.
 In the actual stream:
-- `local_ts_ns` dictates **when** the event is un-queued from the Replayer priority queue.
+- `local_ts_ns` dictates **when** the event is processed by the Replayer.
 - `exchange_ts_ns` represents the actual physical occurrence time at Bitfinex.
 
 The mapping ensures that the normalized operations (`add` or `cancel`) are applied at the precise chronological point in the discrete-event clock.
@@ -82,10 +82,15 @@ The mapping ensures that the normalized operations (`add` or `cancel`) are appli
 Every captured market update message carries both timestamps in the raw log line:
 
 ```
-<local_ts_ns>|<channel>|<raw_json>
+<local_ts_ns>|<exchange_ts_ns>|<channel>|<raw_json>
 ```
 
-`local_ts_ns` is stamped by the capture process on the EC2 host the instant the WebSocket frame is received (before any parsing). The exchange timestamp is extracted from the payload during replay. Because the EC2 instance is colocated in the same AWS region and AZ as Bitfinex's matching engine, the two clocks are tightly synchronized and cross-clock comparisons are valid with sub-millisecond drift.
+- `local_ts_ns` is stamped by the capture process on the EC2 host the instant the WebSocket frame is received (before any parsing).
+- `exchange_ts_ns` is the exchange-side event timestamp, obtained via the Bitfinex TIMESTAMP conf flag (32768). When enabled, every array message has a trailing millisecond timestamp (`mts`) appended. `classify_bitfinex_msg()` in `capture/main.py` extracts `mts`, converts it to nanoseconds, and strips it from `raw_json` before writing.
+
+For legacy data captured before the TIMESTAMP flag was enabled, `exchange_ts_ns` is 0 and the Replayer synthesises it using `default_latency_ms`.
+
+Because the EC2 instance is colocated in the same AWS region and AZ as Bitfinex's servers (~5.6ms measured latency), the two clocks are tightly synchronized and cross-clock comparisons are valid with sub-millisecond drift.
 
 ---
 
@@ -181,5 +186,5 @@ Ack delivery back to the strategy fires immediately after `submit_order` returns
 |-----------|------|
 | Latency queue (heap + drain) | `sim/latency_queue.py` |
 | Pipeline wiring | `sim/main.py` — `build_pipeline()` |
-| Strategy clock update | `strategy/avellaneda_stoikov.py` — `on_market_update()` |
+| Strategy clock update | `strategy/base.py` — `update_clock()` |
 | Replayer drain call | `market_data/replayer.py` — `run()` tick loop |

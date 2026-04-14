@@ -56,15 +56,22 @@ pip install -e .[dev]
 pytest
 ```
 
-## Run capture stub
-After setup:
+## Run capture (local test)
+
+Connects to Bitfinex and writes L3 data to `./data/YYYY-MM-DD/events.log`:
 
 ```bash
-python -m capture.main
+python -m capture.main ./data
 ```
 
-Optional output path:
+For production (EC2), set the S3 bucket:
+```bash
+export S3_BUCKET="orderforge-s3-bucket"
+python -m capture.main ./data
+```
+
+## Run a backtest
 
 ```bash
-python -m capture.main ./data/sample_capture.log
+python -m sim.main data/2026-04-15/events.log --risk-aversion 0.001 --order-size 0.01
 ```

@@ -1,9 +1,7 @@
 # OrderForge Work Partition (4-Person Detailed Plan)
 
-This document defines exactly how 4 team members should divide work, why each workstream exists,
+This document defines how 4 team members divide work, why each workstream exists,
 and the step-by-step sequence to execute with minimal integration risk.
-
-Use this as the team's execution playbook.
 
 ---
 
@@ -11,10 +9,10 @@ Use this as the team's execution playbook.
 
 We split the project into 4 roles:
 
-1. **Capture Engineer** (EC2 + L3 websocket + file writing)
+1. **Capture Engineer** (EC2 + Bitfinex L3 WebSocket + file writing)
 2. **Market Data Engineer** (file parsing + deterministic replay + normalization)
-3. **Exchange Engineer** (order book + matching + account/fees scaffold)
-4. **Integration & Strategy Engineer** (strategy gateway, tests, CI, contract enforcement)
+3. **Exchange Engineer** (order book + matching + account/fees)
+4. **Integration & Strategy Engineer** (strategy gateway, sim pipeline, tests, CI)
 
 Why this split:
 - It matches actual module boundaries.
@@ -30,644 +28,268 @@ Why this split:
 3. **If behavior changes, update docs.**
 4. **Keep modules independent; communicate via defined interfaces only.**
 5. **Preserve capture line format exactly:**
-   - `<local_ts_ns>|<channel>|<raw_json>`
-6. **Treat capture as L3-first (`full`/L3 channels) unless team-approved change.**
+   - `<local_ts_ns>|<exchange_ts_ns>|<channel>|<raw_json>`
+6. **Treat capture as L3-first (Bitfinex R0 Raw Books) unless team-approved change.**
 7. **Keep snapshot cadence at 10 minutes and rotate at UTC midnight.**
 
 ---
 
 ## 3) Person A - Capture Engineer
 
-## Mission (simple)
-Your job is to be the project's "camera operator."  
+### Mission
+Your job is to be the project's "camera operator."
 You continuously record what the real market says, without changing it, so the rest of the team can
 replay the same day later and test strategies fairly.
-For this project, that recording target is L3 market data.
+The recording target is Bitfinex L3 (R0 Raw Books) market data.
 
-## Storyline (what you are doing in plain language)
-Think of a normal finance day:
-- You are not making trading decisions.
-- You are not simulating the exchange.
-- You are only building a trustworthy "market recorder."
-
-Daily-life analogy:
-- Like keeping your bank transaction history exactly as it happened.
-- If one transaction is missing or timestamped wrong, your monthly statement and budget analysis are
-  wrong.
-- Same here: if capture is wrong, replay and strategy results are wrong.
-
-## Why your work is critical to the whole project
-- `market_data/` needs clean files from you to replay events in order.
-- `exchange/` needs accurate event flow to simulate matching correctly.
-- `strategy/` needs realistic simulation inputs to evaluate performance honestly.
-- If your data has gaps, all downstream results become questionable.
-
-## What you own
+### What you own
 - Main code area: `capture/`
 - Capture tests: `tests/` (format, rotation, snapshot interval, reconnect behavior)
-- Runtime scripts/config references if needed: `scripts/`
-- Cloud runtime path: EC2 for live process, S3 for durable storage
+- Cloud runtime: EC2 for live process, S3 for durable storage
 
-## Tools you will use
-- Python (`capture/main.py` and new capture modules)
-- Coinbase L3 websocket feed (`full` + required companion channels)
-- Queue/threading or async tools for listener/writer separation
-- EC2 (run 24/7 capture service)
-- S3 (store rotated files safely)
-- `pytest` (prove behavior is correct)
+### Tools
+- Python (`capture/main.py`)
+- Bitfinex R0 Raw Books WebSocket feed (`wss://api-pub.bitfinex.com/ws/2`)
+- Async queue for listener/writer separation
+- EC2 (run 24/7 capture), S3 (store rotated files)
+- `pytest`
 
-## Detailed sequence (what to do, why, and output)
+### Implementation sequence
 
-### Step A1 - Build a trustworthy writer first
-What:
-- Create writer utilities that append lines safely and consistently.
-- Keep exact line contract:
-  - `<local_ts_ns>|<channel>|<raw_json>`
+#### Step A1 - Writer with dual-timestamp format [DONE]
+Built `build_line()` that produces lines in the format:
+```
+<local_ts_ns>|<exchange_ts_ns>|<channel>|<raw_json>
+```
+Tests validate line format correctness.
 
-Why:
-- File format is your promise to the rest of the team.
-- If format changes, parser/replay breaks.
+#### Step A2 - Bitfinex R0 WebSocket listener [DONE]
+Connected to `wss://api-pub.bitfinex.com/ws/2` with:
+- `prec: "R0"` for individual order IDs (true L3)
+- `freq: "F0"` for real-time updates
+- `symbol: "tBTCUSD"`
+- `len: "100"` (100 orders per side in snapshots)
+- Conf flags: `163840` = `131072` (OB_CHECKSUM) + `32768` (TIMESTAMP)
 
-Output:
-- A stable writer function with tests for line format.
+The TIMESTAMP flag (32768) causes Bitfinex to append a millisecond timestamp (`mts`) to every
+array message. `classify_bitfinex_msg()` extracts and strips it, converting to nanoseconds for
+the `exchange_ts_ns` field.
 
-### Step A2 - Add one websocket listener (start simple)
-What:
-- Connect to Coinbase L3 stream with one connection.
-- Use production endpoint for real capture: `wss://ws-feed.exchange.coinbase.com`.
-- Use sandbox only for connection/debug tests: `wss://ws-feed-public.sandbox.exchange.coinbase.com`.
-- Subscribe to `BTC-USD` with `full` + `heartbeat`, then verify a `subscriptions` ack.
-- For each message, capture:
-  - local receive timestamp (ns)
-  - channel
-  - raw JSON message
-  - exchange sequence/id fields preserved inside `raw_json`
+#### Step A3 - Listener/writer separation with async queue [DONE]
+Listener puts `(channel, raw_json, exchange_ts_ns)` tuples into an `asyncio.Queue(maxsize=50000)`.
+Writer reads from queue and writes to disk. Non-blocking flow.
 
-Why:
-- One stable connection is easier to debug than many.
-- Correctness first, complexity later.
+#### Step A4 - File rotation and snapshots [DONE]
+- Incremental L3 event logs: `data/YYYY-MM-DD/events.log`
+- 10-minute snapshots: `data/YYYY-MM-DD/snapshot_HHMMSS.log`
+- UTC midnight rotation with automatic day-change detection
 
-Output:
-- Live message intake feeding your writer path.
+#### Step A5 - Reliability [DONE]
+- Reconnect with exponential backoff (5s initial, 60s cap)
+- Heartbeat/ping monitoring via websockets library
+- In-memory book state maintained for snapshot accuracy
 
-### Step A3 - Separate listener and writer with a queue
-What:
-- Listener puts events into an in-memory queue.
-- Writer reads queue and writes to disk.
-- Set a queue size limit and define overflow behavior explicitly (block or drop+log).
+#### Step A6 - Cloud deployment and S3 [DONE]
+- Running on EC2 instance `i-0cdb00a6fca91abdd` (3.121.130.22)
+- IAM role for S3 access (no hardcoded keys)
+- S3 upload for snapshots (every 10 min) and daily archives (at midnight)
+- Daily tar.gz compression and old directory cleanup
 
-Why:
-- Network input and disk writes run at different speeds.
-- This prevents losing messages when disk is slow.
+#### Step A7 - Exchange timestamps [DONE]
+Enabled the Bitfinex TIMESTAMP conf flag (32768) so every message carries a real exchange
+timestamp. Measured latency: ~5.6ms EC2-to-Bitfinex. Old data (before April 13, 2026) has
+`exchange_ts_ns=0`; the sim layer handles this via `default_latency_ms` fallback.
 
-Output:
-- Non-blocking capture flow with clean component boundaries.
-
-### Step A4 - Enforce project file rules
-What:
-- Store incremental L3 event logs and periodic internal snapshots in separate files.
-- Write snapshots every 10 minutes (for fast restart and replay anchors).
-- Rotate to new files at UTC midnight.
-
-Why:
-- These are hard project requirements.
-- They make replay deterministic by day and by data type.
-
-Output:
-- Daily files that are predictable for replay and grading demos.
-
-### Step A5 - Add reliability behavior
-What:
-- Reconnect on disconnect (with backoff).
-- Detect stalled connection (heartbeat timeout).
-- Add logs for reconnect and error events.
-- Run a local burn-in session before cloud deploy to verify no obvious gaps.
-
-Why:
-- Real websocket feeds disconnect.
-- Without recovery, you create data gaps.
-
-Output:
-- Capture service that survives normal network failures.
-
-### Step A6 - Run in cloud and move data safely
-What:
-- Run capture process on EC2 continuously.
-- Attach an IAM role to EC2 for S3 access (avoid hardcoded AWS keys).
-- Upload rotated files to S3.
-- Keep deterministic S3 key naming by product/date/type so replay can discover files reliably.
-- Confirm teammate can download same files from S3 locally.
-
-Why:
-- EC2 gives stable always-on runtime.
-- S3 is durable and easy for team sharing.
-
-Output:
-- Reliable EC2 -> S3 -> local data pipeline.
-
-### Step A7 - Document and explain each decision
-What:
-- Keep short notes of:
-  - what you built
-  - why you built it that way
-  - what contract it guarantees
-
-Why:
-- You will need to explain design decisions to TAs later.
-
-Output:
-- Weekly explanation-ready log for demos and reports.
-
-#Your workings will be explained in such way:
-
-1. **Objective**: "I worked on market data capture reliability."
-2. **Implementation**: "I added websocket listener + queue + writer separation."
-3. **Reason**: "This prevents disk I/O delays from causing message loss."
-4. **Evidence**: "Tests pass for format, 10-minute snapshots, and UTC rotation."
-5. **Impact**: "Downstream replay/exchange modules now receive consistent daily files."
-
-## Deliverables checklist for Person A
-- [ ] Live capture process running on EC2
-- [ ] Correct line format in all output files
-- [ ] Separate incremental L3 logs and snapshot files
-- [ ] Snapshot every 10 minutes
-- [ ] UTC midnight rotation
-- [ ] Files uploaded to S3
-- [ ] Tests for format/rotation/snapshot/reconnect
-- [ ] Weekly notes ready for TA explanation
+### Deliverables checklist
+- [x] Live capture process running on EC2
+- [x] Correct dual-timestamp line format in all output files
+- [x] Separate incremental L3 logs and snapshot files
+- [x] Snapshot every 10 minutes
+- [x] UTC midnight rotation with compression and archival
+- [x] Files uploaded to S3
+- [x] Real exchange timestamps via TIMESTAMP flag
+- [x] Tests for format/rotation/snapshot/reconnect
 
 ---
 
 ## 4) Person B - Market Data Engineer
 
-## Mission (simplified)
-Your job is to be the project's "movie editor and replay director."  
+### Mission
+Your job is to be the project's "replay director."
 Person A records the market raw footage; you make sure we can play that footage back in the exact
 right order, every time, for fair simulation.
 
-## Storyline (what you are doing in plain language)
-You are not collecting live data and not matching orders.  
-You take stored capture files and turn them into a clean, deterministic event stream for the
-exchange simulator.
-That stream is based on L3 capture records and preserves event semantics needed by matching logic.
-
-Daily-life finance analogy:
-- Imagine downloading your full bank history and trying to rebuild your spending day.
-- If transactions are out of order or duplicated, your budget summary is wrong.
-- Your role is to sort and standardize that history so anyone can replay the same day and get the
-  same result.
-
-## Why your work is critical to the whole project
-- `exchange/` depends on correctly ordered events to simulate fills realistically.
-- `strategy/` depends on stable replay to compare strategy performance fairly.
-- If replay is inconsistent, one strategy run cannot be compared to another.
-
-## What you own
+### What you own
 - Main code area: `market_data/`
-- Shared replay/event contracts in `common/` (with team review)
+- Shared replay/event contracts in `common/`
 - Replay tests in `tests/`
 
-## Tools you will use
-- Python (`market_data/` modules)
-- File readers/parsers for capture outputs
-- Deterministic sorting/merge logic
-- Event normalization utilities in `common/`
-- `pytest` for replay correctness and repeatability
+### Implementation sequence
 
-## Detailed sequence (what to do, why, and output)
+#### Step B1 - File readers [DONE]
+Built `reader.py` with:
+- `parse_line()`: Handles both 4-field (current) and 3-field (legacy) formats
+- `read_capture_file()`: Streaming iterator, yields `MarketEvent` objects
+- Strict vs permissive mode for malformed lines
+- Helper functions: `extract_bitfinex_snapshot_orders()`, `extract_bitfinex_update()`
 
-### Step B1 - Build robust file readers
-What:
-- Read incremental L3 logs and snapshot files by UTC day.
-- Parse each line using capture contract:
-  - `<local_ts_ns>|<channel>|<raw_json>`
-- Parse L3 message categories from `raw_json` (for example `open`, `match`, `done`, `change`, `received`).
-- Handle malformed lines in a predictable way (strict or permissive mode).
+#### Step B2 - Deterministic ordering [DONE]
+Primary ordering: file order (which preserves `local_ts_ns` order from capture).
+Bitfinex R0 does not provide sequence numbers. Events are processed in capture-arrival order.
 
-Why:
-- Downstream modules should not guess file structure.
-- Predictable error handling prevents hidden bugs.
+#### Step B3 - Normalized events [DONE]
+`MarketEvent` dataclass in `common/types.py`:
+- `local_ts_ns`, `exchange_ts_ns`, `channel`, `raw_json`
+- Clean separation between parsing and consumption
 
-Output:
-- Reliable input layer that turns raw lines into internal records.
+#### Step B4 - Replay engine [DONE]
+`Replayer` class in `market_data/replayer.py`:
+- Clock synchronization (ns -> ms, dual timestamp handling)
+- Latency queue drain on each tick
+- Market event application to exchange engine
+- Top-of-book + depth emission to strategy
+- Supports both real exchange timestamps and synthetic latency fallback
 
-### Step B2 - Define deterministic ordering rules
-What:
-- Decide primary ordering key(s) and tie-breakers (prefer exchange sequence where available).
-- Apply same ordering logic in all runs.
-- Document the rule in code and docs.
-
-Why:
-- Determinism is the core requirement for backtesting.
-- Same input must always produce the same replay sequence.
-
-Output:
-- A replay sequence that is repeatable run-to-run.
-
-### Step B3 - Normalize events for exchange consumption
-What:
-- Convert raw records into normalized event objects.
-- Keep fields minimal and explicit (no hidden transformations).
-- Add field mapping notes in `common/`.
-
-Why:
-- `exchange/` should consume a clean, stable event interface.
-- Clear schema reduces integration friction.
-
-Output:
-- Stable normalized event model shared across modules.
-
-### Step B4 - Expose replay engine API
-What:
-- Build replay API/iterator that emits normalized events.
-- Provide basic controls:
-  - start/stop
-  - replay mode/speed (simple first)
-  - deterministic guarantees
-
-Why:
-- Integration engineer needs a clear entry point for end-to-end testing.
-- Strategy testing requires repeatable replay behavior.
-
-Output:
-- A reusable replay component callable by tests and integrations.
-
-### Step B5 - Validate with deterministic tests
-What:
-- Write tests proving:
-  - same input gives same output sequence
-  - day-boundary behavior is correct
-  - malformed line policy behaves as documented
-
-Why:
-- Replay bugs are often subtle; tests catch regressions early.
-
-Output:
-- Trustworthy replay behavior with regression protection.
-
-### Step B6 - Keep a replay "explanation log"
-What:
-- Track short notes each week:
-  - ordering rules used
-  - normalization decisions
-  - known assumptions/limits
-
-Why:
-- You need to explain technical choices clearly to TAs and teammates.
-
-Output:
-- Semester-long decision trail for demos/reports.
-
-## Your workings will be explained in such way:
-
-1. **Objective**: "I worked on deterministic replay and event normalization."
-2. **Implementation**: "I built parsers for capture files and a stable event ordering pipeline."
-3. **Reason**: "Without deterministic ordering, backtest results are not comparable."
-4. **Evidence**: "Replay tests prove same input files always produce identical event sequences."
-5. **Impact**: "Exchange and strategy modules now run on a consistent, reproducible market stream."
-
-## Deliverables checklist for Person B
-- [ ] Reader for incremental and snapshot files
-- [ ] Deterministic ordering logic (documented)
-- [ ] Normalized event interface in `common/`
-- [ ] Replay API usable by integration tests
-- [ ] Tests for determinism and boundary cases
-- [ ] Weekly notes ready for TA explanation
+### Deliverables checklist
+- [x] Reader for incremental and snapshot files (both formats)
+- [x] Deterministic ordering (file order = capture order)
+- [x] Normalized `MarketEvent` interface in `common/`
+- [x] Replay engine with clock sync and latency support
+- [x] Tests for parsing, determinism, and boundary cases
 
 ---
 
 ## 5) Person C - Exchange Engineer
 
-## Mission (simple)
-Your job is to be the project's "market referee."  
+### Mission
+Your job is to be the project's "market referee."
 Given replayed market events and strategy orders, you decide what actually gets filled, rejected, or
 left pending according to exchange rules.
-Your inputs must reflect L3-style event detail so matching behavior is realistic.
 
-## Storyline (what you are doing in plain language)
-You are not collecting data and not choosing strategy logic.  
-You build the rule engine that answers: "If this order arrived now, what would the exchange do?"
-
-Daily-life finance analogy:
-- Think of a cashier line at a busy store.
-- Customers arrive with buy/sell intentions, and the cashier follows strict service rules.
-- If queue/order rules are wrong, receipts are wrong.
-- Your simulator is that cashier: fair, rule-based, and deterministic.
-
-## Why your work is critical to the whole project
-- `strategy/` performance metrics depend on realistic fill outcomes.
-- `market_data/` can replay perfectly, but if matching logic is wrong, results are still meaningless.
-- The TA will evaluate realism through your order and fill behavior.
-
-## What you own
+### What you own
 - Main code area: `exchange/`
-- Exchange-facing contracts in `common/` (with team review)
 - Exchange behavior tests in `tests/`
 
-## Tools you will use
-- Python (`exchange/` modules)
-- Data structures for order book state (price levels, queues, order maps)
-- Deterministic matching logic for order handling
-- Interface definitions for strategy gateway
-- `pytest` for rule correctness and regression checks
+### Implementation sequence
 
-## Detailed sequence (what to do, why, and output)
+#### Step C1 - Core domain objects [DONE]
+`models.py`:
+- `Order`, `Fill`, `ExecutionResult`, `AccountState`
+- `Side` (BUY/SELL), `TimeInForce` (GTC/IOC/POST_ONLY), `OrderStatus`
+- Fixed-point: `PRICE_MULTIPLIER=10`, `QUANTITY_MULTIPLIER=100_000_000`
+- `MARKET_OWNER_ID="__market__"` for passive book orders
 
-### Step C1 - Define core trading objects
-What:
-- Create clear structures for:
-  - orders
-  - sides (buy/sell)
-  - time-in-force (GTC/IOC/Post-only)
-  - fills/rejections
+#### Step C2 - Order book [DONE]
+`order_book.py`:
+- Price-time priority with sorted price level indices (`bisect`)
+- `deque` queues at each level for FIFO ordering
+- O(1) `best_bid()`/`best_ask()`, O(log n) `add()`/`cancel()`
+- `depth_snapshot()`, `market_depth_ahead()` for queue position
+- `pop_best_filtered()` for strategy-order matching
+- `worst_orders()` for R0 window pruning
+- Monotonic `book_seq` for FIFO ordering
 
-Why:
-- Everything in matching depends on unambiguous order state.
-- Clear data models reduce logic bugs later.
+#### Step C3 - Matching engine [DONE]
+`engine.py`:
+- `submit_order()`: Standard price-time priority matching for strategy orders
+- `match_incoming_against_strategy()`: Market orders vs resting strategy orders with queue position modeling
+- Maker fee 10 BPS, taker fee 20 BPS (Bitfinex rates)
+- GTC, IOC, POST_ONLY support
+- Full account state tracking (cash, position, fees)
 
-Output:
-- Stable domain objects used across exchange logic and tests.
+#### Step C4 - Market event applicator [DONE]
+`market_event_applicator.py`:
+- L3 -> LOB bridge: translates `bf_snapshot`/`bf_update` into book operations
+- Snapshot: clears market orders, re-inserts from snapshot (strategy orders survive)
+- Update: cancel-replace semantics, crossing detection against strategy orders
+- R0 window pruning (100 orders/side max)
+- Bitfinex ID to internal ID mapping
 
-### Step C2 - Build deterministic order book state
-What:
-- Implement in-memory bid/ask representation.
-- Support insert/update/cancel operations.
-- Keep deterministic behavior for equal-price ordering.
+#### Step C5 - Strategy gateway [DONE]
+`gateway.py`:
+- Thin wrapper: `submit_order()`, `cancel_order()`, `get_order()`, `get_account_state()`
+- Isolates strategy code from engine internals
 
-Why:
-- Matching is impossible without reliable book state.
-- Determinism is required for repeatable backtest results.
-
-Output:
-- A predictable order book core with basic operations.
-
-### Step C3 - Implement baseline matching rules
-What:
-- Add first-pass support for:
-  - GTC
-  - IOC
-  - Post-only
-- Define and document simplified behavior assumptions.
-
-Why:
-- These order constraints are core project requirements.
-- Strategy testing needs these semantics early.
-
-Output:
-- Rule-based matching engine skeleton ready for iteration.
-
-### Step C4 - Add account/fee integration hooks
-What:
-- Add placeholders for balances, positions, and fees.
-- Keep interfaces extension-friendly.
-
-Why:
-- Full accounting may come later, but API must be ready now.
-- Avoid breaking changes when adding detailed fee logic.
-
-Output:
-- Exchange outputs that can later include realistic accounting.
-
-### Step C5 - Expose strategy gateway API
-What:
-- Provide clean methods to:
-  - submit orders
-  - cancel orders
-  - query order state
-- Keep API stable and documented.
-
-Why:
-- Person D needs a reliable integration point.
-- A stable gateway prevents strategy code from coupling to internals.
-
-Output:
-- A clear exchange API contract for strategy integration.
-
-### Step C6 - Validate with rule-focused tests
-What:
-- Test each order type and edge case:
-  - empty book
-  - partial fill
-  - cancel flow
-  - post-only rejection paths
-- Add deterministic sequence tests for repeated runs.
-
-Why:
-- Matching bugs are expensive and hard to find manually.
-- Tests protect core behavior during future updates.
-
-Output:
-- Verified exchange core with regression safety.
-
-### Step C7 - Keep an "exchange decisions" log
-What:
-- Write brief weekly notes:
-  - rule assumptions used
-  - edge cases handled
-  - known limitations
-
-Why:
-- You must justify realism choices to TAs and teammates.
-
-Output:
-- A clear decision trail for demos/reports.
-
-## Your workings will be explained in such way:
-
-1. **Objective**: "I implemented exchange matching behavior and order book logic."
-2. **Implementation**: "I built deterministic order handling for GTC/IOC/Post-only and exposed a strategy gateway."
-3. **Reason**: "Without realistic matching rules, strategy backtest outcomes are not credible."
-4. **Evidence**: "Rule and edge-case tests pass, including deterministic repeated-run checks."
-5. **Impact**: "Strategy and integration modules now receive realistic, reproducible fill behavior."
-
-## Deliverables checklist for Person C
-- [ ] Order and fill domain objects defined
-- [ ] Deterministic order book scaffold implemented
-- [ ] Baseline GTC/IOC/Post-only logic implemented
-- [ ] Strategy gateway API documented and usable
-- [ ] Edge-case and determinism tests in place
-- [ ] Weekly notes ready for TA explanation
+### Deliverables checklist
+- [x] Order and fill domain objects with fixed-point arithmetic
+- [x] Deterministic order book with price-time priority
+- [x] Matching engine with GTC/IOC/Post-only
+- [x] Market event applicator with queue position modeling
+- [x] Strategy gateway API
+- [x] Edge-case and determinism tests
 
 ---
 
 ## 6) Person D - Strategy & Integration Engineer
 
-## Mission (simple)
-Your job is to be the project's "orchestrator and quality gatekeeper."  
-You connect all modules into one working pipeline and ensure the full system stays testable,
-understandable, and demo-ready.
+### Mission
+Your job is to be the project's "orchestrator and quality gatekeeper."
+You connect all modules into one working pipeline and build the strategy logic.
 
-## Storyline (what you are doing in plain language)
-Others build parts of the machine; you make sure the machine runs as one system.  
-You also build the strategy integration layer so the project can produce meaningful backtest runs.
-
-Daily-life finance analogy:
-- Imagine preparing a monthly personal finance report.
-- One person gives bank transactions, one gives card statements, one gives cash logs.
-- Your job is to merge them into one accurate report and check consistency.
-- If integration is weak, numbers look fine individually but fail together.
-
-## Why your work is critical to the whole project
-- Parallel development fails without active integration ownership.
-- You detect contract mismatches early before they become late-stage blockers.
-- CI/test discipline from your side protects team velocity and grading confidence.
-
-## What you own
-- Main code area: `strategy/`
+### What you own
+- Main code area: `strategy/`, `sim/`
 - Cross-module integration tests in `tests/`
-- CI reliability and workflow consistency (`.github/workflows/`)
-- Contract alignment checks across A/B/C outputs
+- CI reliability and workflow consistency
 
-## Tools you will use
-- Python (`strategy/` and integration test modules)
-- Replay API from `market_data/`
-- Gateway API from `exchange/`
-- Test harness and fixtures in `tests/`
-- GitHub Actions CI + `pytest`
-- Documentation updates (`docs/`)
+### Implementation sequence
 
-## Detailed sequence (what to do, why, and output)
+#### Step D1 - Strategy interface [DONE]
+`strategy/base.py`:
+- `BaseStrategy` ABC with `on_market_data()` and `on_order_fill()` callbacks
+- `update_clock()`: Sets internal clock and computes `latency_estimate = local_ts - exch_ts`
+- `submit_order()`: Converts float price/amount to fixed-point, routes through latency queue
+- `cancel_order()`: Local cancel for in-flight, delayed cancel for resting orders
+- `strategy/noop.py`: No-op baseline for testing
 
-### Step D1 - Define strategy interface skeleton
-What:
-- Create a minimal strategy interface with callbacks such as:
-  - `on_event`
-  - `on_fill`
-  - optional timer/init hooks
-- Add one no-op baseline strategy implementation.
+#### Step D2 - Avellaneda-Stoikov strategy [DONE]
+`strategy/avellaneda_stoikov.py`:
+- Reservation price: `r = s - q * gamma * sigma^2 * (T-t)`
+- Optimal half-spread: `delta = (gamma * sigma^2 * (T-t)) / 2 + (1/gamma) * ln(1 + gamma/k)`
+- Time-weighted realized volatility estimator (rolling window of 100 samples)
+- Cancel-replace quoting cycle on each market data tick
+- No look-ahead bias (quotes computed from prior-tick volatility)
 
-Why:
-- Establishes consistent entry point for all future strategies.
-- Avoids ad-hoc strategy wiring later.
+#### Step D3 - Latency queue [DONE]
+`sim/latency_queue.py`:
+- Min-heap of `(landing_ts_ms, seq, action, payload)` entries
+- `enqueue_submit()`, `enqueue_cancel()`, `drain()`, `cancel_inflight()`
+- Landing time formula: `landing_ts = current_local_ts + current_latency_estimate`
 
-Output:
-- Stable strategy abstraction ready for exchange connection.
+#### Step D4 - Notifying exchange [DONE]
+`sim/notifying_exchange.py`:
+- Adapter between latency queue and gateway
+- Routes fills from both paths (strategy-submitted and market-crossed)
+- Records all fills in `emitted_fills` for post-backtest analysis
 
-### Step D2 - Build exchange-strategy integration harness
-What:
-- Connect strategy layer to exchange gateway methods.
-- Ensure strategy can submit/cancel/query through the defined API.
+#### Step D5 - End-to-end pipeline [DONE]
+`sim/main.py`:
+- `build_pipeline()`: Wires strategy -> notifying exchange -> gateway -> engine + latency queue
+- `run()`: Full replay with P&L summary
+- CLI with `--risk-aversion`, `--order-size`, `--session-duration`, `--default-latency-ms`
 
-Why:
-- Strategy is only meaningful if it can interact with exchange simulator.
-- Early harness reduces integration surprises.
+#### Step D6 - Analysis scripts [DONE]
+- `scripts/run_backtest_analysis.py`: Detailed P&L, VWAP, drawdown, efficiency report
+- `scripts/validate_determinism.py`: Proves same input -> same output
+- `scripts/validate_exchange_timestamps.py`: Verifies real timestamps in captured data
 
-Output:
-- Working strategy-to-exchange interaction path.
-
-### Step D3 - Build first end-to-end smoke flow
-What:
-- Connect full chain:
-  - replay events -> exchange -> strategy callbacks
-- Assert expected behavior in at least one controlled scenario.
-
-Why:
-- Validates that module boundaries are actually compatible.
-- Gives team a real "system works" proof early.
-
-Output:
-- First complete integration test demonstrating end-to-end flow.
-
-### Step D4 - Enforce CI quality guardrails
-What:
-- Keep test suite deterministic and fast.
-- Ensure every PR is validated in CI.
-- Add/maintain regression tests for bugs found during integration.
-
-Why:
-- CI is your team's safety net.
-- Prevents broken merges and hidden contract drift.
-
-Output:
-- Reliable CI checks that support fast, safe iteration.
-
-### Step D5 - Run contract sync and integration checkpoints
-What:
-- At weekly checkpoints, verify:
-  - capture format still matches replay parser
-  - replay event schema still matches exchange expectations
-  - exchange gateway still matches strategy integration
-- Report mismatches immediately.
-
-Why:
-- Integration failures are cheaper to fix early than late.
-
-Output:
-- Stable multi-person development with fewer blocking conflicts.
-
-### Step D6 - Keep integration narrative for TA demos
-What:
-- Maintain short weekly notes:
-  - what integration broke
-  - what contract changed
-  - what tests were added to prevent recurrence
-
-Why:
-- Shows engineering maturity and control over system complexity.
-
-Output:
-- Clear semester-long integration story for reports/presentations.
-
-## Your workings will be explained in such way:
-
-1. **Objective**: "I integrated replay, exchange, and strategy into one testable pipeline."
-2. **Implementation**: "I built the strategy interface, wired exchange gateway calls, and added end-to-end tests."
-3. **Reason**: "Without integration ownership, independent modules pass alone but fail together."
-4. **Evidence**: "CI passes cross-module smoke tests and regression tests for prior integration issues."
-5. **Impact**: "The team can now evaluate strategy behavior on a reproducible full-system path."
-
-## Deliverables checklist for Person D
-- [ ] Strategy interface and baseline no-op strategy
-- [ ] Strategy <-> exchange integration harness
-- [ ] End-to-end replay->exchange->strategy smoke tests
-- [ ] CI checks reliable and deterministic
-- [ ] Contract mismatch checks at weekly checkpoints
-- [ ] Weekly notes ready for TA explanation
+### Deliverables checklist
+- [x] Strategy interface and baseline no-op strategy
+- [x] Avellaneda-Stoikov market making implementation
+- [x] Latency queue with min-heap
+- [x] Notifying exchange fill routing
+- [x] End-to-end pipeline with CLI
+- [x] Integration and determinism tests
 
 ---
 
-## 7) Integration checkpoints (required cadence)
-
-To avoid last-minute merge chaos, use this schedule every week:
-
-1. **Monday**: lock interface tasks for the week.
-2. **Wednesday**: mid-week integration branch merge.
-3. **Friday**: end-week full integration + demo run.
-
-At each checkpoint:
-- run `pytest -q`
-- verify no contract drift
-- verify docs still reflect real behavior
-
----
-
-## 8) Week-by-week execution map
-
-## Week 1 (already in progress)
-- Baseline structure, CI, tests, docs, capture stub.
-
-## Week 2
-- A: real L3 websocket capture + queue + writer + rotation/snapshots.
-- B: L3 replay parser foundations + deterministic ordering core.
-- C: exchange domain objects + order book scaffold driven by replay events.
-- D: strategy interface + cross-module integration tests skeleton.
-
-## Week 3
-- A: reliability hardening + S3 upload flow.
-- B: normalized events + replay stability tests.
-- C: matching rules baseline (GTC/IOC/Post-only scaffold).
-- D: end-to-end replay->exchange->strategy smoke path in CI.
-
----
-
-## 9) Handoff contracts between people
+## 7) Handoff contracts between people
 
 These are the key dependencies:
 
-- **A -> B**: capture file format, naming conventions, and L3 channel/message mapping.
-- **B -> C**: normalized market event stream contract.
-- **C -> D**: strategy gateway API and fill/account events.
-- **D -> Team**: integration feedback and contract mismatch reports.
+- **A -> B**: Dual-timestamp capture file format, naming conventions, and L3 channel/message mapping.
+- **B -> C**: Normalized `MarketEvent` stream via `Replayer`.
+- **C -> D**: `ExchangeGateway` API and `Fill` events.
+- **D -> Team**: Integration feedback, contract mismatch reports, CI health.
 
 Rule:
 - No one silently changes handoff formats.
@@ -675,7 +297,7 @@ Rule:
 
 ---
 
-## 10) Acceptance checklist per person
+## 8) Acceptance checklist per person
 
 A task is accepted only if:
 - Code works locally.
@@ -683,24 +305,3 @@ A task is accepted only if:
 - CI passes.
 - Docs reflect final behavior.
 - Another teammate can run it without guessing.
-
----
-
-## 11) Recommended communication style
-
-- Keep daily updates short:
-  - what was built
-  - what is blocked
-  - what contract changed
-- Post contract changes before merging.
-- Prefer small PRs over large weekly dumps.
-
----
-
-## 12) Final note
-
-This partition is intentionally interface-first.  
-Parallel work is good only when contracts are stable.
-
-If the following boundaries are kept, the team team can move quickly without
-breaking each other every sprint.

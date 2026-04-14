@@ -8,7 +8,7 @@ This guide is for team members (especially Person B — Market Data) who need to
 
 Each line: `<local_ts_ns>|<exchange_ts_ns>|<channel>|<raw_json>`
 
-- **exchange_ts_ns**: Stamped by exchange at event time (0 when Bitfinex R0 does not provide)
+- **exchange_ts_ns**: Stamped by exchange at event time via TIMESTAMP conf flag (0 for legacy data captured before April 13, 2026)
 - **local_ts_ns**: Stamped by us at capture time (EC2 colocated with exchange)
 
 ---
@@ -180,15 +180,19 @@ scp -i $HOME\Desktop\orderforge-key.pem ec2-user@<EC2_IP>:~/orderforge/data/2026
 
 ---
 
-## Data format (unchanged contract)
+## Data format
 
-Each line in `events.log`:
+Each line in `events.log` uses the dual-timestamp format:
 
 ```
-<local_ts_ns>|<channel>|<raw_json>
+<local_ts_ns>|<exchange_ts_ns>|<channel>|<raw_json>
 ```
 
-Channels: `bf_snapshot`, `bf_update`, `bf_info`, `bf_subscribed`, `bf_heartbeat`, etc.
+- `local_ts_ns` — EC2 wall-clock timestamp (nanoseconds) when message was received
+- `exchange_ts_ns` — Exchange-side timestamp (nanoseconds) when the event was created. 0 for legacy data captured before the TIMESTAMP flag was enabled (April 13, 2026).
+- Channels: `bf_snapshot`, `bf_update`, `bf_info`, `bf_subscribed`
+
+Legacy 3-field format (`<local_ts_ns>|<channel>|<raw_json>`) is supported by the parser for backwards compatibility.
 
 Use `market_data/reader.py` helpers: `extract_bitfinex_snapshot_orders()`, `extract_bitfinex_update()`.
 
