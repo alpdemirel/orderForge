@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from exchange.models import AccountState, ExecutionResult, Fill, Order, OrderStatus, Side, TimeInForce
+from exchange.models import (
+    AccountState, ExecutionResult, Fill, MARKET_OWNER_ID,
+    Order, OrderStatus, Side, TimeInForce,
+)
 from exchange.order_book import OrderBook
 
 
 class ExchangeEngine:
     """Small, test-friendly scaffold for Person C responsibilities."""
 
-    MAKER_FEE_BPS: int = 0      # 0 BPS
-    TAKER_FEE_BPS: int = 5      # 5 BPS = 0.05%
+    MAKER_FEE_BPS: int = 10     # 10 BPS = 0.1%  (Bitfinex maker fee)
+    TAKER_FEE_BPS: int = 20     # 20 BPS = 0.2%  (Bitfinex taker fee)
 
     def __init__(self) -> None:
         self.book = OrderBook()
@@ -64,9 +67,13 @@ class ExchangeEngine:
     def get_fee_pool(self) -> int:
         return self._fee_pool
 
-    def apply_market_event(self, event) -> None:
-        """Apply a Bitfinex L3 MarketEvent to the passive order book."""
-        self._get_applicator().apply(event)
+    def apply_market_event(self, event) -> list[Fill]:
+        """Apply a Bitfinex L3 MarketEvent to the passive order book.
+
+        Returns any fills that occurred between the incoming market order
+        and resting strategy orders.
+        """
+        return self._get_applicator().apply(event)
 
     def apply_s3_snapshot(self, snapshot_data: dict) -> None:
         """Seed the book from an S3 snapshot_HHMMSS.log dict."""
@@ -75,8 +82,108 @@ class ExchangeEngine:
     def _get_applicator(self):
         if not hasattr(self, "_market_event_applicator"):
             from exchange.market_event_applicator import MarketEventApplicator
-            self._market_event_applicator = MarketEventApplicator(self.book)
+            self._market_event_applicator = MarketEventApplicator(self)
         return self._market_event_applicator
+
+    def match_incoming_against_strategy(
+        self,
+        incoming_side: Side,
+        price: int,
+        quantity: int,
+        bitfinex_id: int,
+    ) -> tuple[list[Fill], int]:
+        """Match incoming market liquidity against resting strategy orders.
+
+        When a new market order arrives from the L3 feed, it may cross
+        resting strategy orders.  This method finds and fills those
+        crosses in price-time priority (strategy is maker, market is
+        taker).
+
+        **Queue position modeling**: before filling a strategy order at a
+        given price level, the market-order queue depth ahead of it is
+        subtracted from the available incoming quantity.  This prevents
+        optimistic fills where in reality market participants would have
+        absorbed the aggressor first.
+
+        **Assumption — FIFO within a price level**: the simulation assumes
+        that all market orders at the same price level are filled in FIFO
+        order before any strategy order.  Real exchanges (including
+        Bitfinex) may use different tie-breaking rules within a level.
+        This means simulated fill rates at congested levels may differ
+        from production.
+
+        Returns ``(fills, remaining_quantity)``.  The caller should place
+        ``remaining_quantity`` on the book as a passive market order.
+        """
+        fills: list[Fill] = []
+        remaining = quantity
+        opposite_side = Side.BUY if incoming_side == Side.SELL else Side.SELL
+
+        while remaining > 0:
+            best = self.book.pop_best_filtered(
+                opposite_side,
+                lambda o: o.owner_id != MARKET_OWNER_ID,
+            )
+            if best is None:
+                break
+
+            # Check price crossing
+            if opposite_side == Side.BUY and best.price < price:
+                self.book.add(best)
+                break
+            if opposite_side == Side.SELL and best.price > price:
+                self.book.add(best)
+                break
+
+            # Queue position: only market orders that were on the book
+            # *before* the strategy order count as ahead in FIFO order.
+            market_ahead = self.book.market_depth_ahead(
+                opposite_side, best.price, MARKET_OWNER_ID,
+                before_seq=best.book_seq,
+            )
+            effective_remaining = remaining - market_ahead
+            if effective_remaining <= 0:
+                # Incoming quantity is fully absorbed by market queue ahead
+                self.book.add(best)
+                break
+
+            qty = min(effective_remaining, best.remaining)
+            remaining -= qty
+            best.remaining -= qty
+
+            fill = Fill(
+                maker_order_id=best.order_id,
+                taker_order_id=f"mkt-{bitfinex_id}",
+                maker_owner_id=best.owner_id,
+                taker_owner_id=MARKET_OWNER_ID,
+                maker_side=best.side,
+                taker_side=incoming_side,
+                price=best.price,
+                quantity=qty,
+            )
+            fills.append(fill)
+
+            if best.remaining > 0:
+                best.status = OrderStatus.PARTIALLY_FILLED
+                self.book.add(best)
+            else:
+                best.status = OrderStatus.FILLED
+
+        # Apply accounting for strategy (maker) side only
+        for fill in fills:
+            maker_state = self.get_account_state(fill.maker_owner_id)
+            maker_fee = self._compute_fee(
+                fill.price * fill.quantity, self.MAKER_FEE_BPS,
+            )
+            maker_state.apply_trade(
+                side=fill.maker_side,
+                price=fill.price,
+                quantity=fill.quantity,
+                fee=maker_fee,
+            )
+            self._fee_pool += maker_fee
+
+        return fills, remaining
 
     def _would_cross(self, order: Order) -> bool:
         best_ask = self.book.best_ask()

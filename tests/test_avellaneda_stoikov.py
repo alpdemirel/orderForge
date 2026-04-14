@@ -4,16 +4,17 @@ from strategy.avellaneda_stoikov import AvellanedaStoikovStrategy
 
 def test_symmetric_fallback_when_no_volatility():
     # If sigma is 0 (not enough data yet), it should quote symmetrically around mid_price
-    strategy = AvellanedaStoikovStrategy(risk_aversion=0.1)
+    # Use maker_fee_bps=0 to isolate the pure AS formula
+    strategy = AvellanedaStoikovStrategy(risk_aversion=0.1, maker_fee_bps=0)
     strategy.k = 1.5
     strategy.sigma = 0.0  # Explicitly 0
 
     mid_price = 100.0
     bid, ask = strategy.calculate_quotes(mid_price)
-    
+
     # Expected half-spread = (1 / 0.1) * ln(1 + 0.1 / 1.5) = 10 * ln(1.0666...) ≈ 0.645
     expected_half_spread = 10.0 * math.log(1.0 + 0.1 / 1.5)
-    
+
     assert math.isclose(bid, mid_price - expected_half_spread, rel_tol=1e-5)
     assert math.isclose(ask, mid_price + expected_half_spread, rel_tol=1e-5)
 
@@ -63,21 +64,21 @@ def test_optimal_half_spread_calculation():
 def test_full_quotes_generation(mock_time_left):
     mock_time_left.return_value = 1.0  # Force time_left to be 1.0 for predictable math
     
-    strategy = AvellanedaStoikovStrategy(risk_aversion=0.1)
+    strategy = AvellanedaStoikovStrategy(risk_aversion=0.1, maker_fee_bps=0)
     strategy.k = 1.5
     strategy.sigma = 2.0
     strategy.inventory_position = 5.0 # Long position
-    
+
     mid_price = 100.0
     bid, ask = strategy.calculate_quotes(mid_price)
-    
+
     # Reservation price = 100 - (5 * 0.1 * 4.0 * 1.0) = 98.0
     # Half spread = 0.2 + ~0.645 = ~0.845
     # Expected Bid = 98.0 - 0.845 = 97.155
     # Expected Ask = 98.0 + 0.845 = 98.845
-    
+
     reservation_price = 98.0
     expected_half_spread = 0.2 + (10.0 * math.log(1.0 + 0.1 / 1.5))
-    
+
     assert math.isclose(bid, reservation_price - expected_half_spread, rel_tol=1e-5)
     assert math.isclose(ask, reservation_price + expected_half_spread, rel_tol=1e-5)

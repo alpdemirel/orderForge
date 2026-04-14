@@ -29,9 +29,13 @@ class NotifyingExchange:
 
     def _emit_fills(self, fills: Iterable[Fill]) -> None:
         for fill in fills:
-            self.emitted_fills.append(fill)
-            if self.on_fill is not None:
-                self.on_fill(fill)
+            self.emit_fill(fill)
+
+    def emit_fill(self, fill: Fill) -> None:
+        """Record a single fill and notify the strategy."""
+        self.emitted_fills.append(fill)
+        if self.on_fill is not None:
+            self.on_fill(fill)
 
     def cancel_order(self, order_id: str) -> bool:
         return self.gateway.cancel_order(order_id)

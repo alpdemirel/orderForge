@@ -9,7 +9,8 @@ import pytest
 from common.types import MarketEvent
 from exchange.engine import ExchangeEngine
 from exchange.gateway import ExchangeGateway
-from exchange.market_event_applicator import MarketEventApplicator, MARKET_OWNER_ID
+from exchange.market_event_applicator import MarketEventApplicator
+from exchange.models import MARKET_OWNER_ID
 from exchange.models import Order, Side, TimeInForce, PRICE_MULTIPLIER, QUANTITY_MULTIPLIER
 from exchange.order_book import OrderBook
 from market_data.reader import read_capture_file, is_bitfinex_snapshot, is_bitfinex_update
@@ -35,8 +36,9 @@ class TestWebSocketSnapshot:
     """Tests using events_l3_sample.log (WebSocket capture format)."""
 
     def test_snapshot_loads_all_orders(self):
-        book = OrderBook()
-        applicator = MarketEventApplicator(book)
+        engine = ExchangeEngine()
+        book = engine.book
+        applicator = MarketEventApplicator(engine)
         events = _load_ws_events()
         snapshot = next(e for e in events if is_bitfinex_snapshot(e))
         applicator.apply(snapshot)
@@ -45,8 +47,9 @@ class TestWebSocketSnapshot:
         assert all(o.owner_id == MARKET_OWNER_ID for o in book.orders.values())
 
     def test_best_bid_after_snapshot(self):
-        book = OrderBook()
-        applicator = MarketEventApplicator(book)
+        engine = ExchangeEngine()
+        book = engine.book
+        applicator = MarketEventApplicator(engine)
         events = _load_ws_events()
         snapshot = next(e for e in events if is_bitfinex_snapshot(e))
         applicator.apply(snapshot)
@@ -56,8 +59,9 @@ class TestWebSocketSnapshot:
         assert book.best_ask() is None
 
     def test_snapshot_order_quantities(self):
-        book = OrderBook()
-        applicator = MarketEventApplicator(book)
+        engine = ExchangeEngine()
+        book = engine.book
+        applicator = MarketEventApplicator(engine)
         events = _load_ws_events()
         snapshot = next(e for e in events if is_bitfinex_snapshot(e))
         applicator.apply(snapshot)
@@ -68,8 +72,9 @@ class TestWebSocketSnapshot:
         assert order.side == Side.BUY
 
     def test_removal_of_unknown_order_is_graceful(self):
-        book = OrderBook()
-        applicator = MarketEventApplicator(book)
+        engine = ExchangeEngine()
+        book = engine.book
+        applicator = MarketEventApplicator(engine)
         events = _load_ws_events()
         snapshot = next(e for e in events if is_bitfinex_snapshot(e))
         applicator.apply(snapshot)
@@ -80,8 +85,9 @@ class TestWebSocketSnapshot:
         assert len(book.orders) == 3  # unchanged
 
     def test_update_adds_new_bid_order(self):
-        book = OrderBook()
-        applicator = MarketEventApplicator(book)
+        engine = ExchangeEngine()
+        book = engine.book
+        applicator = MarketEventApplicator(engine)
         events = _load_ws_events()
         snapshot = next(e for e in events if is_bitfinex_snapshot(e))
         applicator.apply(snapshot)
@@ -97,8 +103,9 @@ class TestWebSocketSnapshot:
         assert added.quantity == round(0.29807263 * QUANTITY_MULTIPLIER)
 
     def test_second_snapshot_clears_and_rebuilds(self):
-        book = OrderBook()
-        applicator = MarketEventApplicator(book)
+        engine = ExchangeEngine()
+        book = engine.book
+        applicator = MarketEventApplicator(engine)
         events = _load_ws_events()
         snapshot = next(e for e in events if is_bitfinex_snapshot(e))
 
@@ -109,8 +116,9 @@ class TestWebSocketSnapshot:
         assert len(book.orders) == 3  # not 6
 
     def test_strategy_order_survives_snapshot_clear(self):
-        book = OrderBook()
-        applicator = MarketEventApplicator(book)
+        engine = ExchangeEngine()
+        book = engine.book
+        applicator = MarketEventApplicator(engine)
         events = _load_ws_events()
         snapshot = next(e for e in events if is_bitfinex_snapshot(e))
 
@@ -128,8 +136,9 @@ class TestWebSocketSnapshot:
         assert len(book.orders) == 4  # 3 market + 1 strategy
 
     def test_non_actionable_channels_are_ignored(self):
-        book = OrderBook()
-        applicator = MarketEventApplicator(book)
+        engine = ExchangeEngine()
+        book = engine.book
+        applicator = MarketEventApplicator(engine)
         events = _load_ws_events()
 
         # First 3 events: bf_info, bf_conf, bf_subscribed
@@ -138,8 +147,9 @@ class TestWebSocketSnapshot:
         assert len(book.orders) == 0
 
     def test_modify_repositions_order_in_book(self):
-        book = OrderBook()
-        applicator = MarketEventApplicator(book)
+        engine = ExchangeEngine()
+        book = engine.book
+        applicator = MarketEventApplicator(engine)
         events = _load_ws_events()
         snapshot = next(e for e in events if is_bitfinex_snapshot(e))
         applicator.apply(snapshot)
@@ -167,8 +177,9 @@ class TestS3Snapshot:
     """Tests using snapshot_sample.json (S3 periodic snapshot format)."""
 
     def test_s3_snapshot_loads_correct_count(self):
-        book = OrderBook()
-        applicator = MarketEventApplicator(book)
+        engine = ExchangeEngine()
+        book = engine.book
+        applicator = MarketEventApplicator(engine)
         data = _load_s3_snapshot()
         applicator.apply_s3_snapshot(data)
 
@@ -176,8 +187,9 @@ class TestS3Snapshot:
         assert all(o.owner_id == MARKET_OWNER_ID for o in book.orders.values())
 
     def test_s3_snapshot_best_bid_and_ask(self):
-        book = OrderBook()
-        applicator = MarketEventApplicator(book)
+        engine = ExchangeEngine()
+        book = engine.book
+        applicator = MarketEventApplicator(engine)
         data = _load_s3_snapshot()
         applicator.apply_s3_snapshot(data)
 
@@ -186,8 +198,9 @@ class TestS3Snapshot:
         assert book.best_ask() == round(73960 * PRICE_MULTIPLIER)
 
     def test_s3_snapshot_bid_and_ask_sides_correct(self):
-        book = OrderBook()
-        applicator = MarketEventApplicator(book)
+        engine = ExchangeEngine()
+        book = engine.book
+        applicator = MarketEventApplicator(engine)
         data = _load_s3_snapshot()
         applicator.apply_s3_snapshot(data)
 
@@ -197,8 +210,9 @@ class TestS3Snapshot:
         assert len(asks) == 14
 
     def test_s3_snapshot_specific_order(self):
-        book = OrderBook()
-        applicator = MarketEventApplicator(book)
+        engine = ExchangeEngine()
+        book = engine.book
+        applicator = MarketEventApplicator(engine)
         data = _load_s3_snapshot()
         applicator.apply_s3_snapshot(data)
 
@@ -208,8 +222,9 @@ class TestS3Snapshot:
         assert order.quantity == round(0.47140813 * QUANTITY_MULTIPLIER)
 
     def test_s3_snapshot_clears_previous_market_orders(self):
-        book = OrderBook()
-        applicator = MarketEventApplicator(book)
+        engine = ExchangeEngine()
+        book = engine.book
+        applicator = MarketEventApplicator(engine)
         data = _load_s3_snapshot()
 
         applicator.apply_s3_snapshot(data)

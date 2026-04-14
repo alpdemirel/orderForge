@@ -3,7 +3,6 @@ Avellaneda-Stoikov Market Making Strategy
 Reference: High-frequency trading in a limit order book (Avellaneda & Stoikov, 2008)
 """
 import math
-import time
 import uuid
 from collections import deque
 from strategy.base import BaseStrategy
@@ -30,27 +29,36 @@ class AvellanedaStoikovStrategy(BaseStrategy):
 
     def __init__(
         self,
-        risk_aversion: float = 0.1,
+        risk_aversion: float = 0.001,
         order_size: float = 1.0,
         session_duration: float = 1.0,
+        maker_fee_bps: int = 10,
     ):
         super().__init__()
 
-        # AS model parameters
+        if risk_aversion <= 0:
+            raise ValueError(f"risk_aversion (gamma) must be positive, got {risk_aversion}")
+        if session_duration <= 0:
+            raise ValueError(f"session_duration must be positive, got {session_duration}")
+
+        # AS model parameters (gamma tuned for dollar-denominated sigma)
         self.gamma = risk_aversion      # Inventory risk aversion (gamma)
         self.k = 1.5                    # Order book liquidity / density parameter (kappa)
+        self._maker_fee_rate = maker_fee_bps / 10_000  # 10 BPS = 0.001
 
         # Volatility state
         self.sigma = 0.0                # Current volatility estimate (updated on each tick)
         self._mid_prices: deque = deque(maxlen=self._VOL_WINDOW)
+        self._mid_timestamps: deque = deque(maxlen=self._VOL_WINDOW)
 
         # Inventory
         self.inventory_position = 0.0
         self.order_size = order_size
 
         # Time tracking — used to compute (T - t) ∈ [0, 1]
-        self._session_start: float = time.monotonic()
-        self._session_duration: float = session_duration   # seconds (or normalised units)
+        # Initialised on the first market-data tick (simulation clock, ms)
+        self._session_start_ms: float | None = None
+        self._session_duration_ms: float = session_duration * 1000.0  # convert s → ms
 
         # Active order tracking for cancel-replace cycle
         self._active_order_ids: list[str] = []
@@ -59,38 +67,63 @@ class AvellanedaStoikovStrategy(BaseStrategy):
     
     def _time_left(self) -> float:
         """
-        Returns T - t normalised to [0, 1].
+        Returns T - t normalised to [0, 1] using the *simulation* clock.
         Clamps to a small positive floor so formulas stay well-defined near T.
         """
-        elapsed = time.monotonic() - self._session_start
-        remaining = 1.0 - elapsed / self._session_duration
+        if self._session_start_ms is None:
+            return 1.0  # before first tick
+        elapsed_ms = self.current_local_ts - self._session_start_ms
+        remaining = 1.0 - elapsed_ms / self._session_duration_ms
         return max(remaining, 1e-6)
 
-    def _update_volatility(self, mid_price: float) -> None:
+    def _update_volatility(self, mid_price: float, ts_ms: int) -> None:
         """
-        Estimates sigma as the standard deviation of recent log-returns.
+        Time-weighted realized volatility estimator in dollar terms.
+
+        The AS model requires sigma in the same units as the price process
+        (dollars), not dimensionless log-returns.  We compute the log-return
+        volatility and scale by mid_price: sigma_$ = sigma_logret * S.
+
+        This correctly handles irregular tick spacing — a burst of updates
+        within one millisecond contributes less than the same number spread
+        over a second.
+
         Requires at least 2 samples; sigma stays 0.0 until then.
         """
         self._mid_prices.append(mid_price)
+        self._mid_timestamps.append(ts_ms)
         n = len(self._mid_prices)
         if n < 2:
             return
 
         prices = list(self._mid_prices)
-        log_returns = [
-            math.log(prices[i] / prices[i - 1])
-            for i in range(1, n)
-        ]
-        mean = sum(log_returns) / len(log_returns)
-        variance = sum((r - mean) ** 2 for r in log_returns) / len(log_returns)
-        self.sigma = math.sqrt(variance)
+        timestamps = list(self._mid_timestamps)
+
+        total_dt_ms = timestamps[-1] - timestamps[0]
+        if total_dt_ms <= 0:
+            return  # all samples at the same timestamp
+
+        weighted_sq_sum = 0.0
+        for i in range(1, n):
+            dt_ms = timestamps[i] - timestamps[i - 1]
+            if dt_ms <= 0:
+                continue
+            log_ret = math.log(prices[i] / prices[i - 1])
+            # Weight = fraction of total window this interval occupies
+            weight = dt_ms / total_dt_ms
+            weighted_sq_sum += weight * (log_ret ** 2)
+
+        # Scale by mid_price to convert log-return vol → dollar vol
+        sigma = math.sqrt(weighted_sq_sum) * mid_price
+        if math.isfinite(sigma):
+            self.sigma = sigma
 
     def _cancel_active_orders(self) -> None:
         """Cancel all outstanding strategy quotes on the exchange."""
         if self.exchange is None:
             return
         for oid in self._active_order_ids:
-            self.exchange.cancel_order(oid)
+            self.cancel_order(oid)
         self._active_order_ids.clear()
 
     # Core AS formulas
@@ -128,7 +161,7 @@ class AvellanedaStoikovStrategy(BaseStrategy):
 
         bid_price = reservation - half_spread
         ask_price = reservation + half_spread
-        
+
         return bid_price, ask_price
 
     # Event handlers
@@ -138,14 +171,23 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         Triggered when new market data arrives.
         Updates volatility estimate and recomputes/submits quotes.
         """
+        # Seed session start on first tick (simulation clock)
+        if self._session_start_ms is None:
+            self._session_start_ms = event["local_ts_ms"]
+
         mid_price = (event["best_bid"] + event["best_ask"]) / 2.0
-        self._update_volatility(mid_price)
 
-        # Don't quote until sigma is initialised
-        if self.sigma == 0.0:
+        # Quote using volatility from *prior* ticks only (no look-ahead bias),
+        # then update volatility with the current tick afterwards.
+        if self.sigma != 0.0:
+            bid_price, ask_price = self.calculate_quotes(mid_price)
+        else:
+            bid_price = ask_price = None
+
+        self._update_volatility(mid_price, event["local_ts_ms"])
+
+        if bid_price is None:
             return
-
-        bid_price, ask_price = self.calculate_quotes(mid_price)
 
         # Cancel previous quotes before placing new ones
         self._cancel_active_orders()

@@ -11,6 +11,7 @@ from enum import Enum
 # Fee notional = price_ticks * satoshis. For display USD: divide by PRICE_MULTIPLIER * QUANTITY_MULTIPLIER
 PRICE_MULTIPLIER = 10
 QUANTITY_MULTIPLIER = 100_000_000
+MARKET_OWNER_ID = "__market__"
 
 
 class Side(str, Enum):
@@ -42,6 +43,10 @@ class Order:
     tif: TimeInForce = TimeInForce.GTC
     remaining: int = field(init=False)
     status: OrderStatus = field(default=OrderStatus.OPEN, init=False)
+    # Monotonic sequence number assigned by OrderBook.add() — used for
+    # queue-position modeling.  Orders with a lower book_seq arrived
+    # earlier and sit ahead in the FIFO queue at a given price level.
+    book_seq: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         self.remaining = self.quantity

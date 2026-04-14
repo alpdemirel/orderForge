@@ -1,14 +1,24 @@
 """
 OrderForge Capture — Bitfinex R0 Raw Books (L3) primary source.
-Replaces capture/main.py (Coinbase stub).
 
 Dual-timestamp format (EC2 colocated in same AWS region & AZ as exchange):
     <local_ts_ns>|<exchange_ts_ns>|<channel>|<raw_json>
-  - exchange_ts_ns: stamped by exchange at event time (0 if Bitfinex does not provide)
+  - exchange_ts_ns: stamped by exchange at event time (ms → ns)
   - local_ts_ns: stamped by us at capture time
 
-Bitfinex R0 Raw Books does not include exchange timestamp in book messages;
-we use 0 for exchange_ts_ns. Future exchanges (e.g. Coinbase) may provide it.
+Exchange timestamps are obtained via the Bitfinex TIMESTAMP conf flag
+(32768).  When enabled, every array message has a trailing millisecond
+timestamp (``mts``) appended: ``[CHAN_ID, payload, MTS]``.
+``classify_bitfinex_msg`` extracts and strips ``mts`` before writing,
+so downstream consumers see clean ``[CHAN_ID, payload]`` in raw_json
+while ``exchange_ts_ns`` carries the real exchange event time.
+
+The sim layer uses ``exchange_ts_ns`` to compute per-tick latency:
+    latency = local_ts - exchange_ts
+    landing_ts = local_ts + latency
+For old captures where exchange_ts_ns is 0 (captured before the
+TIMESTAMP flag was enabled), ``Replayer.default_latency_ms`` provides
+a synthetic fallback.
 
 Bitfinex-specific channels written:
     bf_snapshot   — initial full book snapshot (list of [ORDER_ID, PRICE, AMOUNT])
@@ -171,51 +181,76 @@ SUBSCRIBE_MSG = json.dumps({
     "len": "100",       # 100 orders per side in snapshot
 })
 
-CHECKSUM_MSG = json.dumps({
+CONF_MSG = json.dumps({
     "event": "conf",
-    "flags": 131072,    # Enable CRC32 checksums
+    "flags": 131072 + 32768,  # OB_CHECKSUM (131072) + TIMESTAMP (32768) = 163840
 })
 
 
-def classify_bitfinex_msg(raw: str) -> tuple[str, str]:
+def classify_bitfinex_msg(raw: str) -> tuple[str, str, int]:
     """
-    Parse a raw Bitfinex WebSocket message and return (channel_label, raw_json).
+    Parse a raw Bitfinex WebSocket message and return
+    ``(channel_label, raw_json, exchange_ts_ns)``.
+
+    When the TIMESTAMP conf flag (32768) is enabled, Bitfinex appends a
+    millisecond timestamp (``mts``) as the **last element** of every
+    array message::
+
+        [CHAN_ID, payload..., MTS]
+
+    We extract ``mts``, convert to nanoseconds, and strip it from the
+    raw JSON so downstream consumers see the same format regardless of
+    whether TIME was enabled.
 
     Bitfinex message types:
       {"event": "info", ...}          — connection info
-      {"event": "subscribed", ...}    — subscription confirmation → gives us CHAN_ID
+      {"event": "subscribed", ...}    — subscription confirmation
       {"event": "pong", ...}          — heartbeat response
       [CHAN_ID, "hb"]                 — channel heartbeat
+      [CHAN_ID, "hb", MTS]            — heartbeat with TIME flag
       [CHAN_ID, [[OID,P,A],...]]      — snapshot (nested list)
+      [CHAN_ID, [[OID,P,A],...], MTS] — snapshot with TIME flag
       [CHAN_ID, OID, P, A]            — single update (4-element array)
+      [CHAN_ID, OID, P, A, MTS]       — single update with TIME flag
       [CHAN_ID, "cs", CHECKSUM]       — checksum frame
     """
     data = json.loads(raw)
+    exchange_ts_ns = 0
 
     if isinstance(data, dict):
         event = data.get("event", "info")
-        return f"bf_{event}", raw
+        return f"bf_{event}", raw, 0
 
     if isinstance(data, list):
+        # ── Try to extract trailing MTS (integer, last element) ──────
+        # The TIME flag appends mts to every array message.  We detect
+        # it by checking if the last element is an integer that looks
+        # like a millisecond epoch (> 1e12).  This distinguishes it
+        # from ORDER_ID or AMOUNT fields.
+        if len(data) >= 2 and isinstance(data[-1], (int, float)) and data[-1] > 1e12:
+            exchange_ts_ns = int(data[-1]) * 1_000_000  # ms → ns
+            data = data[:-1]  # strip mts for classification
+            raw = json.dumps(data, separators=(",", ":"))
+
         if len(data) == 2:
             payload = data[1]
             if payload == "hb":
-                return "bf_heartbeat", raw
+                return "bf_heartbeat", raw, exchange_ts_ns
             if isinstance(payload, str):
-                return "bf_checksum", raw
+                return "bf_checksum", raw, exchange_ts_ns
             if isinstance(payload, list):
                 # Single update: [CHAN_ID, [OID, PRICE, AMOUNT]]
                 if len(payload) == 3 and not isinstance(payload[0], list):
-                    return "bf_update", raw
+                    return "bf_update", raw, exchange_ts_ns
                 # Full snapshot: [CHAN_ID, [[OID,P,A], [OID,P,A], ...]]
                 if len(payload) > 3 or isinstance(payload[0], list):
-                    return "bf_snapshot", raw
+                    return "bf_snapshot", raw, exchange_ts_ns
         if len(data) == 4:
-            return "bf_update", raw
+            return "bf_update", raw, exchange_ts_ns
         if len(data) == 3 and data[1] == "cs":
-            return "bf_checksum", raw
+            return "bf_checksum", raw, exchange_ts_ns
 
-    return "bf_unknown", raw
+    return "bf_unknown", raw, exchange_ts_ns
 
 
 # ── Writer coroutine ──────────────────────────────────────────────────────────
@@ -225,7 +260,7 @@ async def file_writer(
     snapshot_queue: asyncio.Queue,
 ) -> None:
     """
-    Reads (channel, raw_json) tuples from queue.
+    Reads (channel, raw_json, exchange_ts_ns) tuples from queue.
     Writes to daily event log, rotates at UTC midnight.
     Signals snapshot_queue when it's time for a snapshot.
     """
@@ -240,10 +275,10 @@ async def file_writer(
     try:
         while True:
             try:
-                channel, raw_json = await asyncio.wait_for(queue.get(), timeout=1.0)
+                channel, raw_json, exchange_ts_ns = await asyncio.wait_for(queue.get(), timeout=1.0)
             except asyncio.TimeoutError:
                 # Check for rotation / snapshot even when queue is idle
-                channel, raw_json = None, None
+                channel, raw_json, exchange_ts_ns = None, None, 0
 
             now_utc = datetime.now(timezone.utc)
             now_date = now_utc.strftime("%Y-%m-%d")
@@ -262,7 +297,7 @@ async def file_writer(
 
             # ── Write the line ─────────────────────────────────────────────────
             if channel and raw_json:
-                line = build_line(channel, raw_json)
+                line = build_line(channel, raw_json, exchange_ts_ns)
                 file_handle.write(line + "\n")
                 file_handle.flush()
                 queue.task_done()
@@ -352,16 +387,18 @@ async def websocket_listener(
                 max_size=10 * 1024 * 1024,  # 10 MB — snapshots can be large
             ) as ws:
                 log.info("Connected. Enabling checksums and subscribing ...")
-                await ws.send(CHECKSUM_MSG)
+                await ws.send(CONF_MSG)
                 await ws.send(SUBSCRIBE_MSG)
                 backoff = 5  # reset on successful connect
 
                 async for raw_msg in ws:
-                    channel_label, raw_json = classify_bitfinex_msg(raw_msg)
+                    channel_label, raw_json, exchange_ts_ns = classify_bitfinex_msg(raw_msg)
 
-                    # Maintain in-memory book for snapshots
+                    # Maintain in-memory book for snapshots.
+                    # Use the mts-stripped raw_json (classify already
+                    # removed the trailing timestamp if present).
                     try:
-                        data = json.loads(raw_msg)
+                        data = json.loads(raw_json)
                         if isinstance(data, list):
                             if len(data) == 2 and isinstance(data[1], list):
                                 payload = data[1]
@@ -381,7 +418,7 @@ async def websocket_listener(
                     if channel_label in ("bf_heartbeat", "bf_checksum", "bf_pong"):
                         continue
 
-                    await queue.put((channel_label, raw_msg))
+                    await queue.put((channel_label, raw_json, exchange_ts_ns))
 
         except websockets.ConnectionClosed as e:
             log.warning(f"Connection closed ({e}). Reconnecting in {backoff}s ...")
