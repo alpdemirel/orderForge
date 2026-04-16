@@ -115,32 +115,40 @@ def make_s3_key(filename: str, utc_date: str) -> str:
 
 def archive_previous_day(base_dir: Path, date_str: str) -> None:
     """
-    Compresses the daily folder, uploads to S3, and deletes the local folder to save space.
+    Uploads events.log individually, compresses the daily folder into a
+    tar.gz, uploads it to S3, and cleans up local files.
     Run in a background thread to prevent blocking the websocket loop.
     """
     day_dir = base_dir / date_str
     if not day_dir.exists() or not day_dir.is_dir():
         return
 
+    # ── Step 1: Upload events.log individually (most important file) ──
+    events_file = day_dir / "events.log"
+    if events_file.exists():
+        try:
+            s3_key = make_s3_key("events.log", date_str)
+            upload_to_s3(events_file, s3_key)
+        except Exception as exc:
+            log.error(f"Failed to upload events.log for {date_str}: {exc}")
+
+    # ── Step 2: Compress and upload tar.gz (contains everything) ──
     tar_path = base_dir / f"{date_str}.tar.gz"
-    
     try:
-        # Create the tar.gz file
         log.info(f"Compressing {day_dir} -> {tar_path}")
         with tarfile.open(tar_path, "w:gz") as tar:
             tar.add(day_dir, arcname=date_str)
-            
-        # Upload the compressed file to S3
+
         s3_key = make_s3_key(f"{date_str}.tar.gz", date_str)
         upload_to_s3(tar_path, s3_key)
-        
+
         # Cleanup the local tar file ONLY if upload succeeded
         log.info(f"Upload successful. Removing local archive for {date_str}...")
         tar_path.unlink(missing_ok=True)
-        
+
         # Now clean up old directories (older than 24 hours / 1 day)
         clean_old_directories(base_dir)
-        
+
     except Exception as exc:
         log.error(f"Archive process failed for {date_str}: {exc}")
 
