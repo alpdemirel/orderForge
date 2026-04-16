@@ -70,8 +70,21 @@ export S3_BUCKET="orderforge-s3-bucket"
 python -m capture.main ./data
 ```
 
-## Run a backtest
+## Run a backtest (CLI)
 
 ```bash
 python -m sim.main data/2026-04-15/events.log --risk-aversion 0.001 --order-size 0.01
 ```
+
+## Run the Backtest UI
+
+Requires Node.js 18+ (for the one-time frontend build).
+
+```bash
+pip install fastapi "uvicorn[standard]"
+python main.py
+```
+
+Open http://localhost:8000 in your browser. On first run it will automatically install frontend dependencies and build — subsequent launches are instant.
+
+The UI lets you select a strategy, pick one or more data days, configure parameters, and view per-day results with charts and statistics.
