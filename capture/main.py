@@ -115,24 +115,14 @@ def make_s3_key(filename: str, utc_date: str) -> str:
 
 def archive_previous_day(base_dir: Path, date_str: str) -> None:
     """
-    Uploads events.log individually, compresses the daily folder into a
-    tar.gz, uploads it to S3, and cleans up local files.
+    Compresses the daily folder into a tar.gz (events.log + snapshots),
+    uploads it to S3, and cleans up local files.
     Run in a background thread to prevent blocking the websocket loop.
     """
     day_dir = base_dir / date_str
     if not day_dir.exists() or not day_dir.is_dir():
         return
 
-    # ── Step 1: Upload events.log individually (most important file) ──
-    events_file = day_dir / "events.log"
-    if events_file.exists():
-        try:
-            s3_key = make_s3_key("events.log", date_str)
-            upload_to_s3(events_file, s3_key)
-        except Exception as exc:
-            log.error(f"Failed to upload events.log for {date_str}: {exc}")
-
-    # ── Step 2: Compress and upload tar.gz (contains everything) ──
     tar_path = base_dir / f"{date_str}.tar.gz"
     try:
         log.info(f"Compressing {day_dir} -> {tar_path}")
@@ -142,11 +132,7 @@ def archive_previous_day(base_dir: Path, date_str: str) -> None:
         s3_key = make_s3_key(f"{date_str}.tar.gz", date_str)
         upload_to_s3(tar_path, s3_key)
 
-        # Cleanup the local tar file ONLY if upload succeeded
-        log.info(f"Upload successful. Removing local archive for {date_str}...")
-        tar_path.unlink(missing_ok=True)
-
-        # Now clean up old directories (older than 24 hours / 1 day)
+        # Clean up old local directories (older than 1 day)
         clean_old_directories(base_dir)
 
     except Exception as exc:
@@ -155,28 +141,23 @@ def archive_previous_day(base_dir: Path, date_str: str) -> None:
 
 def clean_old_directories(base_dir: Path) -> None:
     """
-    Deletes directories in base_dir that are older than 1 day from the current UTC date.
+    Deletes local directories older than 2 days from the current UTC date.
+    Only called after a successful S3 upload, so the data is safe.
     """
     try:
         now_utc = datetime.now(timezone.utc)
-        retention_days = 1
-        
+
         for item in base_dir.iterdir():
             if item.is_dir():
                 try:
-                    # Expect foldernames like YYYY-MM-DD
                     folder_date = datetime.strptime(item.name, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                    age_days = (now_utc - folder_date).days
-                    
-                    if age_days > retention_days:
-                        log.info(f"Cleaning up 24h+ old local directory: {item}")
+                    if (now_utc - folder_date).days > 2:
+                        log.info(f"Cleaning up old local directory: {item}")
                         shutil.rmtree(item)
                 except ValueError:
-                    # Ignore folders that don't match the date format
                     continue
     except Exception as e:
         log.error(f"Failed to clean old directories: {e}")
-
 
 
 # ── Bitfinex subscription helpers ─────────────────────────────────────────────
@@ -261,6 +242,14 @@ def classify_bitfinex_msg(raw: str) -> tuple[str, str, int]:
     return "bf_unknown", raw, exchange_ts_ns
 
 
+def _log_archive_result(fut) -> None:
+    """Callback for archive_previous_day executor future — surfaces exceptions."""
+    try:
+        fut.result()
+    except Exception as exc:
+        log.error(f"archive_previous_day failed: {exc}", exc_info=True)
+
+
 # ── Writer coroutine ──────────────────────────────────────────────────────────
 async def file_writer(
     queue: asyncio.Queue,
@@ -295,9 +284,11 @@ async def file_writer(
             if now_date != current_date:
                 file_handle.close()
                 # Compress, upload, and cleanup the old day in the background
-                asyncio.get_event_loop().run_in_executor(
+                loop = asyncio.get_event_loop()
+                fut = loop.run_in_executor(
                     None, archive_previous_day, base_dir, current_date
                 )
+                fut.add_done_callback(_log_archive_result)
                 current_date = now_date
                 current_file_path = event_log_path(base_dir, current_date)
                 file_handle = current_file_path.open("a", encoding="utf-8")
@@ -321,6 +312,12 @@ async def file_writer(
         log.info("Writer cancelled — flushing and closing.")
         file_handle.flush()
         file_handle.close()
+        # Archive the current day so data isn't orphaned when the
+        # service restarts into a new UTC day.
+        try:
+            archive_previous_day(base_dir, current_date)
+        except Exception as exc:
+            log.error(f"Shutdown: archive failed for {current_date}: {exc}")
 
 
 # ── Snapshot writer ───────────────────────────────────────────────────────────

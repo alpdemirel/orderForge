@@ -71,6 +71,16 @@ def run_backtest(data_dir: str):
         print(f"ERROR: {events_file} not found")
         return
 
+    # Derive date from the data directory name (expected format: YYYY-MM-DD)
+    dir_basename = os.path.basename(os.path.normpath(data_dir))
+    try:
+        datetime.datetime.strptime(dir_basename, "%Y-%m-%d")
+        date_str = dir_basename
+    except ValueError:
+        date_str = "2026-03-15"
+        print(f"WARNING: Could not parse date from directory name '{dir_basename}', "
+              f"falling back to {date_str}")
+
     snapshot_files = sorted([
         os.path.join(data_dir, f)
         for f in os.listdir(data_dir)
@@ -80,7 +90,7 @@ def run_backtest(data_dir: str):
 
     checkpoints = {}
     for sf in snapshot_files:
-        ts_ns = snapshot_ts_ns(sf)
+        ts_ns = snapshot_ts_ns(sf, date_str=date_str)
         checkpoints[ts_ns] = {"file": sf, "name": os.path.basename(sf)}
 
     checkpoint_times = sorted(checkpoints.keys())
