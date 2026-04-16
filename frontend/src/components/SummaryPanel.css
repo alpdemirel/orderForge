@@ -1,0 +1,52 @@
+.summary-panel {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.summary-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+
+.summary-card.positive {
+  border-color: var(--green);
+  background: var(--green-bg);
+}
+
+.summary-card.negative {
+  border-color: var(--red);
+  background: var(--red-bg);
+}
+
+.summary-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.summary-value {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--text-primary);
+  font-family: var(--mono);
+}
+
+.summary-card.positive .summary-value {
+  color: var(--green);
+}
+
+.summary-card.negative .summary-value {
+  color: var(--red);
+}
+
+.summary-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+}

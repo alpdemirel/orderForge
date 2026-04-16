@@ -1,0 +1,54 @@
+.strategy-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  position: relative;
+}
+
+.strategy-card:hover {
+  background: var(--bg-hover);
+}
+
+.strategy-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  background: var(--blue-bg);
+  color: var(--blue);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 16px;
+  flex-shrink: 0;
+}
+
+.strategy-info h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.strategy-info p {
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.check-badge {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+}

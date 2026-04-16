@@ -1,0 +1,170 @@
+.running-page {
+  display: flex;
+  justify-content: center;
+  padding-top: 40px;
+}
+
+.running-container {
+  max-width: 600px;
+  width: 100%;
+}
+
+.running-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24px;
+}
+
+.running-container h2 {
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.cancel-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.cancel-btn:hover {
+  color: var(--red);
+  border-color: var(--red);
+  background: var(--red-bg);
+}
+
+.progress-bar-container {
+  margin-bottom: 28px;
+}
+
+.progress-bar {
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.4s ease;
+}
+
+.progress-label {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.status-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.status-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  transition: all 0.3s ease;
+}
+
+.status-item.status-completed {
+  border-color: var(--green);
+  background: var(--green-bg);
+}
+
+.status-item.status-error {
+  border-color: var(--red);
+  background: var(--red-bg);
+}
+
+.status-item.status-running {
+  border-color: var(--accent);
+  background: var(--blue-bg);
+}
+
+.status-icon {
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.icon-done {
+  color: var(--green);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.icon-error {
+  color: var(--red);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.icon-pending {
+  color: var(--text-muted);
+  font-size: 24px;
+}
+
+.status-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.status-day {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--mono);
+}
+
+.status-message {
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.running-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: 32px;
+}
+
+.btn-run {
+  padding: 14px 40px;
+  font-size: 16px;
+  font-weight: 600;
+  border-radius: 10px;
+}

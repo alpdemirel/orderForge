@@ -39,6 +39,7 @@ class Replayer:
         on_fill: Optional[Callable[[Fill], None]] = None,
         latency_queue=None,
         default_latency_ms: int = 0,
+        on_market_data: Optional[Callable] = None,
     ) -> None:
         self.filepath = filepath
         self.strategy = strategy
@@ -46,6 +47,7 @@ class Replayer:
         self.on_fill = on_fill
         self.latency_queue = latency_queue
         self.default_latency_ms = default_latency_ms
+        self.on_market_data = on_market_data
 
     def run(self, strict: bool = False) -> None:
         logger.info(f"Starting replay from {self.filepath}")
@@ -138,5 +140,8 @@ class Replayer:
             "depth_bids": bids_float,
             "depth_asks": asks_float,
         }
+
+        if self.on_market_data is not None:
+            self.on_market_data(local_ts_ms, exch_ts_ms, best_bid_float, best_ask_float, mid_price_float)
 
         self.strategy.on_market_data(payload)
