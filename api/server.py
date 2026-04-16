@@ -13,6 +13,7 @@ import asyncio
 import json
 import os
 import queue
+import tarfile
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -100,6 +101,35 @@ def get_strategies():
     ]
 
 
+# ── events.log resolution (handles S3-archived tarballs) ────────────────
+
+def _find_events_log(day_dir: Path) -> Path | None:
+    """Return events.log path if already on disk; no extraction."""
+    direct = day_dir / "events.log"
+    if direct.exists():
+        return direct
+    nested = day_dir / day_dir.name / "events.log"
+    if nested.exists():
+        return nested
+    return None
+
+
+def _ensure_events_log(day_dir: Path) -> Path | None:
+    """Return events.log path, extracting from {DATE}.tar.gz on first use."""
+    found = _find_events_log(day_dir)
+    if found:
+        return found
+    archive = day_dir / f"{day_dir.name}.tar.gz"
+    if not archive.exists():
+        return None
+    with tarfile.open(archive, "r:gz") as tf:
+        for member in tf.getmembers():
+            if member.name.endswith("/events.log") or member.name == "events.log":
+                tf.extract(member, path=day_dir, filter="data")
+                break
+    return _find_events_log(day_dir)
+
+
 # ── GET /api/data-days ───────────────────────────────────────────────────
 
 @app.get("/api/data-days")
@@ -110,14 +140,20 @@ def get_data_days():
     for d in sorted(DATA_DIR.iterdir()):
         if not d.is_dir():
             continue
-        events_file = d / "events.log"
-        if events_file.exists():
-            size_mb = round(events_file.stat().st_size / (1024 * 1024), 1)
-            days.append({
-                "date": d.name,
-                "file": str(events_file),
-                "size_mb": size_mb,
-            })
+        events_file = _find_events_log(d)
+        archive = d / f"{d.name}.tar.gz"
+        if events_file:
+            source = events_file
+        elif archive.exists():
+            source = archive
+        else:
+            continue
+        size_mb = round(source.stat().st_size / (1024 * 1024), 1)
+        days.append({
+            "date": d.name,
+            "file": str(source),
+            "size_mb": size_mb,
+        })
     return days
 
 
@@ -127,11 +163,11 @@ def get_data_days():
 async def launch_backtest(req: BacktestRequest):
     job_id = uuid.uuid4().hex[:12]
 
-    # Validate days exist
+    # Validate days exist (extract from tarball on first use if needed)
     day_files = {}
     for day in req.days:
-        events_file = DATA_DIR / day / "events.log"
-        if not events_file.exists():
+        events_file = _ensure_events_log(DATA_DIR / day)
+        if not events_file:
             raise HTTPException(status_code=404, detail=f"No events.log for {day}")
         day_files[day] = str(events_file)
 
