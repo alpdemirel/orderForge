@@ -62,8 +62,7 @@ class MarketEventApplicator:
         resting strategy order.
         """
         if is_bitfinex_snapshot(event):
-            self._apply_snapshot(event)
-            return []
+            return self._apply_snapshot(event)
         elif is_bitfinex_update(event):
             return self._apply_update(event)
         # all other channels (bf_info, bf_conf, bf_subscribed, heartbeat) → no-op
@@ -87,15 +86,19 @@ class MarketEventApplicator:
 
     # ── Internal handlers ────────────────────────────────────────────────
 
-    def _apply_snapshot(self, event: MarketEvent) -> None:
+    def _apply_snapshot(self, event: MarketEvent) -> list[Fill]:
         self._clear_market_orders()
+        all_fills: list[Fill] = []
         for raw in extract_bitfinex_snapshot_orders(event):
-            self._insert_market_order(
+            fills = self._insert_market_order(
                 bitfinex_id=raw["order_id"],
                 float_price=raw["price"],
                 float_amount=raw["amount"],
                 side_str=raw["side"],
             )
+            if fills:
+                all_fills.extend(fills)
+        return all_fills
 
     def _apply_update(self, event: MarketEvent) -> list[Fill]:
         raw = extract_bitfinex_update(event)
