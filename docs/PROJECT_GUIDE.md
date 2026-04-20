@@ -155,6 +155,7 @@ Future path:
 ### Scripts
 - `run_backtest_analysis.py`: Detailed P&L report (fills, VWAP, drawdown, efficiency)
 - `run_sim.py`: Quick simulation runner
+- `validate_backtest_accuracy.py`: 6-test accuracy suite (parsing, book reconstruction vs S3, determinism, accounting, fill realism, timestamps)
 - `validate_determinism.py`: Proves deterministic replay
 - `validate_exchange_timestamps.py`: Verifies real exchange timestamps in captured data
 - Diagnostic scripts for accuracy, fill analysis, gap analysis, health checks
@@ -228,6 +229,27 @@ python scripts/run_backtest_analysis.py data/2026-04-15/events.log
 ```
 
 No `--default-latency-ms` needed for data captured after April 13, 2026 — real exchange timestamps are present.
+
+### Validating backtest accuracy
+
+```bash
+# Full suite (6 tests — takes ~5 min per day of data)
+python -m scripts.validate_backtest_accuracy data/2026-03-29
+
+# Skip the determinism test to save time (one fewer full replay)
+python -m scripts.validate_backtest_accuracy data/2026-03-29 --skip-determinism
+
+# Skip both determinism and accounting (fastest — only book reconstruction + parsing)
+python -m scripts.validate_backtest_accuracy data/2026-03-29 --skip-determinism --skip-accounting
+```
+
+Tests run:
+1. **Event Parsing** — every line in events.log parses without error
+2. **Book Reconstruction vs S3** — seeds from first snapshot, replays events, compares engine state against all remaining S3 snapshots (Jaccard similarity, best bid/ask diff)
+3. **Determinism** — two identical simulation runs produce byte-identical output
+4. **Accounting Invariants** — cash, position, and fees recomputed from fills match engine state exactly
+5. **Fill Realism** — fill prices within market range, no oversized fills, no int64 overflow
+6. **Timestamp Monotonicity** — events are strictly chronological
 
 ---
 

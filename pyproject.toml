@@ -8,8 +8,12 @@ version = "0.1.0"
 description = "Deterministic L3 market simulation pipeline for backtesting strategies on Bitfinex BTC-USD"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [ "websockets>=12.0",  
-"boto3>=1.34",
+dependencies = [
+    "websockets>=12.0",
+    "boto3>=1.34",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.0",
 ]
 
 [project.optional-dependencies]
