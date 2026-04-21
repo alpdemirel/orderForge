@@ -325,17 +325,33 @@ async def snapshot_writer(
     snapshot_queue: asyncio.Queue,
     book_state: dict,
     base_dir: Path,
+    book_meta: dict | None = None,
 ) -> None:
     """
     Listens for snapshot triggers and dumps current in-memory book state to disk.
     book_state is populated and maintained by the listener.
+
+    Output format (two lines):
+      line 1: {"version":1, "snapshot_ts_ns":<ns>, "last_exch_ts_ns":<ns>}
+      line 2: {"<order_id>": {"price": <n>, "amount": <n>}, ...}
+
+    The header's last_exch_ts_ns is the exchange timestamp of the most
+    recent update applied to book_state before serialization — the
+    canonical "as-of" time of the snapshot. Used by the accuracy
+    validator for precise checkpoint alignment.
     """
     while True:
         try:
             utc_date, utc_time = await snapshot_queue.get()
+            meta = {
+                "version": 1,
+                "snapshot_ts_ns": now_local_ns(),
+                "last_exch_ts_ns": (book_meta or {}).get("last_exch_ts_ns", 0),
+            }
             snap = json.dumps(book_state, separators=(",", ":"))
             snap_path = snapshot_path(base_dir, utc_date, utc_time)
             with snap_path.open("w", encoding="utf-8") as f:
+                f.write(json.dumps(meta, separators=(",", ":")) + "\n")
                 f.write(snap + "\n")
             log.info(f"Snapshot written: {snap_path} ({len(book_state)} orders)")
 
@@ -352,24 +368,29 @@ async def snapshot_writer(
 
 
 # ── In-memory order book maintenance ──────────────────────────────────────────
-def apply_snapshot(book_state: dict, orders: list) -> None:
+def apply_snapshot(book_state: dict, orders: list, book_meta: dict | None = None, exchange_ts_ns: int = 0) -> None:
     book_state.clear()
     for entry in orders:
         if not isinstance(entry, list) or len(entry) < 3:
             continue
         order_id, price, amount = entry[0], entry[1], entry[2]
         book_state[str(order_id)] = {"price": price, "amount": amount}
+    if book_meta is not None and exchange_ts_ns:
+        book_meta["last_exch_ts_ns"] = exchange_ts_ns
 
-def apply_update(book_state: dict, order_id: int, price: float, amount: float) -> None:
+def apply_update(book_state: dict, order_id: int, price: float, amount: float, book_meta: dict | None = None, exchange_ts_ns: int = 0) -> None:
     key = str(order_id)
     if price == 0:
         book_state.pop(key, None)
     else:
         book_state[key] = {"price": price, "amount": amount}
+    if book_meta is not None and exchange_ts_ns:
+        book_meta["last_exch_ts_ns"] = exchange_ts_ns
 # ── WebSocket listener ────────────────────────────────────────────────────────
 async def websocket_listener(
     queue: asyncio.Queue,
     book_state: dict,
+    book_meta: dict | None = None,
 ) -> None:
 
     """
@@ -409,13 +430,13 @@ async def websocket_listener(
                                 payload = data[1]
                                 # Snapshot: [CHAN_ID, [[OID,P,A], [OID,P,A], ...]]
                                 if payload and isinstance(payload[0], list):
-                                    apply_snapshot(book_state, payload)
+                                    apply_snapshot(book_state, payload, book_meta, exchange_ts_ns)
                                 # Update: [CHAN_ID, [OID, P, A]]
                                 elif len(payload) == 3:
-                                    apply_update(book_state, payload[0], payload[1], payload[2])
+                                    apply_update(book_state, payload[0], payload[1], payload[2], book_meta, exchange_ts_ns)
                             elif len(data) == 4 and not isinstance(data[1], str):
                                 # Update (alt format): [chan_id, order_id, price, amount]
-                                apply_update(book_state, data[1], data[2], data[3])
+                                apply_update(book_state, data[1], data[2], data[3], book_meta, exchange_ts_ns)
                     except Exception as e:
                         log.warning(f"Book state update error: {e}")
 
@@ -439,15 +460,16 @@ async def async_main(base_dir: Path) -> None:
     queue: asyncio.Queue = asyncio.Queue(maxsize=50_000)
     snapshot_queue: asyncio.Queue = asyncio.Queue()
     book_state: dict = {}  # shared mutable state: {order_id_str: {price, amount}}
+    book_meta: dict = {"last_exch_ts_ns": 0}  # tracks as-of time for snapshots
 
     listener = asyncio.create_task(
-        websocket_listener(queue, book_state), name="listener"
+        websocket_listener(queue, book_state, book_meta), name="listener"
     )
     writer = asyncio.create_task(
         file_writer(queue, base_dir, snapshot_queue), name="writer"
     )
     snapshotter = asyncio.create_task(
-        snapshot_writer(snapshot_queue, book_state, base_dir), name="snapshotter"
+        snapshot_writer(snapshot_queue, book_state, base_dir, book_meta), name="snapshotter"
     )
 
     log.info("OrderForge Bitfinex capture running. Ctrl-C to stop.")

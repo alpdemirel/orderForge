@@ -47,9 +47,35 @@ logging.basicConfig(level=logging.WARNING)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def load_s3_snapshot(path: str) -> dict:
+def load_s3_snapshot(path: str) -> tuple[dict, int | None]:
+    """Load a snapshot file.
+
+    New format (version 1): two lines — metadata JSON then book JSON.
+    Legacy format: single line — book JSON only.
+
+    Returns (orders_dict, as_of_exch_ts_ns) where as_of is None for
+    legacy files or when the embedded timestamp is 0/missing.
+    """
     with open(path) as f:
-        raw = json.load(f)
+        first_line = f.readline()
+        header = None
+        raw = None
+        try:
+            parsed = json.loads(first_line)
+            if isinstance(parsed, dict) and parsed.get("version") == 1:
+                header = parsed
+                raw = json.loads(f.readline())
+            else:
+                raw = parsed
+        except json.JSONDecodeError:
+            raw = {}
+
+    as_of = None
+    if header is not None:
+        embedded = header.get("last_exch_ts_ns") or 0
+        if embedded > 0:
+            as_of = embedded
+
     result = {}
     for oid_str, entry in raw.items():
         result[int(oid_str)] = {
@@ -57,7 +83,7 @@ def load_s3_snapshot(path: str) -> dict:
             "amount": float(entry["amount"]),
             "side": "bid" if entry["amount"] > 0 else "ask",
         }
-    return result
+    return result, as_of
 
 
 def snapshot_ts_ns(filename: str, date_str: str, capture_latency_ms: int = 750) -> int:
@@ -149,20 +175,29 @@ def test_book_reconstruction(data_dir: str, date_str: str, events_file: str) -> 
     print(f"  S3 snapshots:       {len(snapshot_files)}")
 
     # Seed from first snapshot
-    first_snap = load_s3_snapshot(snapshot_files[0])
+    first_snap, first_as_of = load_s3_snapshot(snapshot_files[0])
     engine = ExchangeEngine()
     engine.apply_s3_snapshot(first_snap)
-    seed_ts = snapshot_ts_ns(snapshot_files[0], date_str)
-    print(f"  Seeded from:        {os.path.basename(snapshot_files[0])} ({len(first_snap)} orders)")
+    seed_ts = first_as_of if first_as_of else snapshot_ts_ns(snapshot_files[0], date_str)
+    seed_clock = "exch" if first_as_of else "local"
+    print(f"  Seeded from:        {os.path.basename(snapshot_files[0])} ({len(first_snap)} orders, clock={seed_clock})")
 
-    # Build checkpoints from remaining snapshots
+    # Build checkpoints from remaining snapshots.
+    # Each checkpoint carries a ts and a clock ("exch" or "local") — we
+    # compare against the matching field on each event.
     checkpoints = {}
+    embedded_count = 0
     for sf in snapshot_files[1:]:
-        ts = snapshot_ts_ns(sf, date_str)
+        _, as_of = load_s3_snapshot(sf)
+        if as_of:
+            ts, clock = as_of, "exch"
+            embedded_count += 1
+        else:
+            ts, clock = snapshot_ts_ns(sf, date_str), "local"
         if ts > seed_ts:
-            checkpoints[ts] = {"file": sf, "name": os.path.basename(sf)}
+            checkpoints[ts] = {"file": sf, "name": os.path.basename(sf), "clock": clock}
     cp_times = sorted(checkpoints.keys())
-    print(f"  Checkpoints:        {len(cp_times)}\n")
+    print(f"  Checkpoints:        {len(cp_times)} ({embedded_count} with embedded ts)\n")
 
     next_cp = 0
     events_processed = 0
@@ -170,12 +205,15 @@ def test_book_reconstruction(data_dir: str, date_str: str, events_file: str) -> 
     t0 = time.time()
 
     for event in read_capture_file(events_file):
-        while next_cp < len(cp_times) and event.local_ts_ns >= cp_times[next_cp]:
+        while next_cp < len(cp_times):
             cp = checkpoints[cp_times[next_cp]]
+            event_ts = event.exchange_ts_ns if cp["clock"] == "exch" else event.local_ts_ns
+            if event_ts < cp_times[next_cp]:
+                break
             bb, ba = get_tob(engine)
             replayed_ids = extract_market_ids(engine)
 
-            gt = load_s3_snapshot(cp["file"])
+            gt, _ = load_s3_snapshot(cp["file"])
             bids_gt = [e for e in gt.values() if e["side"] == "bid"]
             asks_gt = [e for e in gt.values() if e["side"] == "ask"]
             gt_bb = max((e["price"] for e in bids_gt), default=None)
