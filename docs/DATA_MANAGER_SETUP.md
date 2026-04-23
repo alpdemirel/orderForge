@@ -46,7 +46,7 @@ Once your `.env` file is ready, launch the UI exactly as normal from your termin
 ```
 
 1. Open `http://localhost:8000` in your web browser.
-2. Under the **"Select Data Days"** grid, click the dashed tile labeled **`+ Get data from server`**.
+2. Under the **"Select Data Days"** grid, click the dashed tile labeled **`Manage Data...`**.
 3. A popup will appear scanning both your hard drive and the remote S3 server:
     - **Remote:** Click **Download** to actively stream the 1GB+ day archive directly from S3 onto your Mac via a dedicated background thread.
     - **Installed:** Click **Delete** to instantly remove the massive dataset from your hard drive to free up extreme amounts of storage space once you are finished running a backtest.

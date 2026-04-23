@@ -45,7 +45,7 @@ export default function DaySelector({ days, selected, onToggle, onSelectAll, onC
           )
         })}
         <div className="day-tile" onClick={onOpenManager} style={{ backgroundColor: 'var(--bg-card)', border: '1px dashed var(--border-color)' }}>
-            <div className="day-date" style={{ fontWeight: 'bold' }}>+ Get data from server</div>
+            <div className="day-date" style={{ fontWeight: 'bold' }}>Manage Data...</div>
         </div>
       </div>
       {days.length === 0 && (

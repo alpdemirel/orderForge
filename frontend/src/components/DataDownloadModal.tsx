@@ -68,7 +68,7 @@ export default function DataDownloadModal({ onClose, onDataChanged }: Props) {
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={(e) => e.stopPropagation()}>
         <div className="modal-header">
-          <h2>Data Download Manager</h2>
+          <h2>Data Manager</h2>
           <button className="close-btn" onClick={onClose}>&times;</button>
         </div>
         
