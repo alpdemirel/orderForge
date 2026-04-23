@@ -89,7 +89,10 @@ export default function DataDownloadModal({ onClose, onDataChanged }: Props) {
                     </>
                   )}
                   {day.status === 'downloading' && (
-                    <span className="downloading-text">Downloading... {day.progress ? Math.round(day.progress) + '%' : ''}</span>
+                    <div className="download-progress-container">
+                      <progress value={day.progress || 0} max="100" className="download-bar"></progress>
+                      <span className="downloading-text">{day.progress ? Math.round(day.progress) + '%' : 'Starting...'}</span>
+                    </div>
                   )}
                   {day.status === 'remote' && (
                     <button className="btn btn-sm btn-download" onClick={() => handleDownload(day.date)}>Download</button>

@@ -385,11 +385,11 @@ async def download_status(day: str):
     async def event_stream():
         while True:
             if day not in _downloads:
-                yield f"data: {json.dumps({'status': 'unknown'})}\\n\\n"
+                yield f"data: {json.dumps({'status': 'unknown'})}\n\n"
                 break
                 
             state = _downloads[day]
-            yield f"data: {json.dumps(state)}\\n\\n"
+            yield f"data: {json.dumps(state)}\n\n"
             
             if state["status"] in ("completed", "error"):
                 break

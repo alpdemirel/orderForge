@@ -6,7 +6,7 @@ export async function fetchStrategies() {
 }
 
 export async function fetchDataDays() {
-  const res = await fetch(`${BASE}/data-days`);
+  const res = await fetch(`${BASE}/data-days`, { cache: 'no-store' });
   return res.json();
 }
 

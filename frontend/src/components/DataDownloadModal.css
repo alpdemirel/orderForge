@@ -96,8 +96,30 @@
   background: #dc2626;
 }
 
+.download-progress-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.download-bar {
+  width: 120px;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.download-bar::-webkit-progress-bar {
+  background-color: var(--bg-card);
+}
+
+.download-bar::-webkit-progress-value {
+  background-color: #3b82f6;
+}
+
 .downloading-text {
   color: #3b82f6;
   font-size: 0.9rem;
   font-weight: 500;
+  min-width: 45px;
 }
