@@ -12,7 +12,12 @@ Endpoints:
 import asyncio
 import json
 import os
+from dotenv import load_dotenv
+
+# Load secret .env file seamlessly
+load_dotenv()
 import queue
+import shutil
 import tarfile
 import threading
 import uuid
@@ -25,6 +30,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+import boto3
+from botocore.exceptions import NoCredentialsError, ClientError
 
 from sim.analysis import run_full_analysis
 
@@ -287,6 +294,120 @@ async def backtest_results(job_id: str):
         "status": job["status"],
     }
 
+
+# ── S3 Data Manager Endpoints ──────────────────────────────────────────────
+
+S3_BUCKET = "orderforge-s3-bucket"
+_downloads: dict[str, dict[str, Any]] = {}
+
+@app.get("/api/s3-days")
+def get_s3_days():
+    # Identify local days
+    local_days = set()
+    if DATA_DIR.exists():
+        for d in DATA_DIR.iterdir():
+            if d.is_dir() and (_find_events_log(d) or (d / f"{d.name}.tar.gz").exists()):
+                local_days.add(d.name)
+    
+    # Identify remote days
+    s3_days = []
+    try:
+        s3 = boto3.client("s3")
+        res = s3.list_objects_v2(Bucket=S3_BUCKET, Prefix="bitfinex/btcusd/", Delimiter="/")
+        for prefix in res.get("CommonPrefixes", []):
+            # prefix format: bitfinex/btcusd/YYYY-MM-DD/
+            date_str = prefix["Prefix"].split("/")[-2]
+            
+            status = "remote"
+            if date_str in local_days:
+                status = "local"
+            elif date_str in _downloads and _downloads[date_str].get("status") == "downloading":
+                status = "downloading"
+                
+            s3_days.append({"date": date_str, "status": status})
+            
+    except (NoCredentialsError, ClientError) as e:
+        # Fallback to just local days if S3 access fails
+        print(f"S3 Listing Failed: {e}")
+        for ld in local_days:
+            s3_days.append({"date": ld, "status": "local"})
+            
+    return {"days": sorted(s3_days, key=lambda x: x["date"], reverse=True)}
+
+
+class S3DownloadRequest(BaseModel):
+    day: str
+
+@app.post("/api/s3-download")
+def download_s3_data(req: S3DownloadRequest):
+    day = req.day
+    if day in _downloads and _downloads[day]["status"] == "downloading":
+        return {"status": "already downloading"}
+        
+    # Set up download state
+    _downloads[day] = {"status": "downloading", "progress": 0, "error": None}
+    
+    # Fire off background thread
+    executor.submit(_s3_downloadTask, day)
+    return {"status": "started"}
+
+def _s3_downloadTask(day: str):
+    target_dir = DATA_DIR / day
+    target_dir.mkdir(parents=True, exist_ok=True)
+    tar_path = target_dir / f"{day}.tar.gz"
+    
+    try:
+        s3 = boto3.client("s3")
+        s3_key = f"bitfinex/btcusd/{day}/{day}.tar.gz"
+        
+        # Get purely for filesize progress reporting
+        obj = s3.head_object(Bucket=S3_BUCKET, Key=s3_key)
+        total_size = obj["ContentLength"]
+        downloaded = 0
+        
+        def progress_callback(bytes_amount):
+            nonlocal downloaded
+            downloaded += bytes_amount
+            _downloads[day]["progress"] = (downloaded / total_size) * 100
+        
+        s3.download_file(S3_BUCKET, s3_key, str(tar_path), Callback=progress_callback)
+        _downloads[day]["status"] = "completed"
+        
+    except Exception as e:
+        _downloads[day]["status"] = "error"
+        _downloads[day]["error"] = str(e)
+        if tar_path.exists():
+            tar_path.unlink()
+
+
+@app.get("/api/s3-download/{day}/status")
+async def download_status(day: str):
+    async def event_stream():
+        while True:
+            if day not in _downloads:
+                yield f"data: {json.dumps({'status': 'unknown'})}\\n\\n"
+                break
+                
+            state = _downloads[day]
+            yield f"data: {json.dumps(state)}\\n\\n"
+            
+            if state["status"] in ("completed", "error"):
+                break
+                
+            await asyncio.sleep(0.5)
+            
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.delete("/api/data-days/{day}")
+def delete_local_day(day: str):
+    target_dir = DATA_DIR / day
+    if target_dir.exists() and target_dir.is_dir():
+        shutil.rmtree(target_dir)
+        # Check if there are symlinks inside DATA_DIR that match this (from old tests)
+        # Actually rmtree deletes the symlink itself if it's the target_dir, or the contents if it's a dir.
+        return {"status": "deleted"}
+    return {"status": "not found"}
 
 # ── Static frontend serving (must be AFTER API routes) ──────────────────
 

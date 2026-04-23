@@ -12,6 +12,7 @@ interface Props {
   onToggle: (date: string) => void
   onSelectAll: () => void
   onClear: () => void
+  onOpenManager: () => void
 }
 
 function formatDate(dateStr: string) {
@@ -19,7 +20,7 @@ function formatDate(dateStr: string) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-export default function DaySelector({ days, selected, onToggle, onSelectAll, onClear }: Props) {
+export default function DaySelector({ days, selected, onToggle, onSelectAll, onClear, onOpenManager }: Props) {
   return (
     <div className="day-selector">
       <div className="day-selector-header">
@@ -43,6 +44,9 @@ export default function DaySelector({ days, selected, onToggle, onSelectAll, onC
             </div>
           )
         })}
+        <div className="day-tile" onClick={onOpenManager} style={{ backgroundColor: 'var(--bg-card)', border: '1px dashed var(--border-color)' }}>
+            <div className="day-date" style={{ fontWeight: 'bold' }}>+ Get data from server</div>
+        </div>
       </div>
       {days.length === 0 && (
         <div className="day-empty">No data days found in data/ directory</div>

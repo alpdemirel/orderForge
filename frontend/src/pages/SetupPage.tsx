@@ -4,6 +4,7 @@ import { fetchStrategies, fetchDataDays, launchBacktest } from '../api'
 import StrategyCard from '../components/StrategyCard'
 import DaySelector from '../components/DaySelector'
 import ParameterForm from '../components/ParameterForm'
+import DataDownloadModal from '../components/DataDownloadModal'
 import './SetupPage.css'
 
 export default function SetupPage() {
@@ -14,6 +15,7 @@ export default function SetupPage() {
   const [selectedDays, setSelectedDays] = useState<string[]>([])
   const [params, setParams] = useState<Record<string, number>>({})
   const [launching, setLaunching] = useState(false)
+  const [showDataManager, setShowDataManager] = useState(false)
 
   useEffect(() => {
     fetchStrategies().then((data) => {
@@ -79,8 +81,16 @@ export default function SetupPage() {
           onToggle={toggleDay}
           onSelectAll={() => setSelectedDays(days.map((d: any) => d.date))}
           onClear={() => setSelectedDays([])}
+          onOpenManager={() => setShowDataManager(true)}
         />
       </div>
+
+      {showDataManager && (
+        <DataDownloadModal 
+            onClose={() => setShowDataManager(false)} 
+            onDataChanged={() => fetchDataDays().then(setDays)} 
+        />
+      )}
 
       {currentStrategy && (
         <div className="setup-section">

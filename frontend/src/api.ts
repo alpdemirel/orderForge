@@ -48,3 +48,42 @@ export async function fetchResults(jobId: string) {
   const res = await fetch(`${BASE}/backtest/${jobId}/results`);
   return res.json();
 }
+
+export async function fetchS3Days() {
+  const res = await fetch(`${BASE}/s3-days`);
+  return res.json();
+}
+
+export async function downloadS3Day(day: string) {
+  const res = await fetch(`${BASE}/s3-download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ day }),
+  });
+  return res.json();
+}
+
+export async function deleteDataDay(day: string) {
+  const res = await fetch(`${BASE}/data-days/${day}`, {
+    method: 'DELETE',
+  });
+  return res.json();
+}
+
+export function subscribeDownloadStatus(
+  day: string,
+  onUpdate: (data: { status: string; progress?: number; error?: string }) => void,
+) {
+  const es = new EventSource(`${BASE}/s3-download/${day}/status`);
+  es.onmessage = (e) => {
+    const data = JSON.parse(e.data);
+    onUpdate(data);
+    if (data.status === 'completed' || data.status === 'error') {
+      es.close();
+    }
+  };
+  es.onerror = () => {
+    es.close();
+  };
+  return es;
+}
