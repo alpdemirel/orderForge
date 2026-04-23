@@ -17,6 +17,66 @@ function fmt(v: number, decimals = 2) {
   return v.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 }
 
+// Human-friendly labels + units for every known strategy parameter key.
+// Any key present in the `parameters` dict but not in this map falls back to
+// its raw key name, so new strategies keep rendering without a code change.
+const PARAM_LABELS: Record<string, { label: string; suffix?: string }> = {
+  // Avellaneda-Stoikov
+  risk_aversion: { label: 'Risk aversion (gamma)' },
+  liquidity_param: { label: 'Liquidity param (kappa)' },
+  final_sigma: { label: 'Final sigma', suffix: ' $/tick' },
+  // Glosten-Milgrom
+  informed_fraction: { label: 'Informed fraction (alpha)' },
+  value_half_range_bps: { label: 'Value half-range', suffix: ' bps' },
+  belief_decay: { label: 'Belief decay' },
+  final_belief: { label: 'Final belief (V = V_H)' },
+  belief_updates: { label: 'Belief updates (count)' },
+  // Shared
+  order_size: { label: 'Order size', suffix: ' BTC' },
+  session_duration: { label: 'Session duration', suffix: 's' },
+}
+
+// Preferred display order. Unknown keys are appended alphabetically at the end.
+const PARAM_ORDER = [
+  'risk_aversion',
+  'informed_fraction',
+  'value_half_range_bps',
+  'belief_decay',
+  'order_size',
+  'session_duration',
+  'liquidity_param',
+  'final_sigma',
+  'final_belief',
+  'belief_updates',
+]
+
+function formatParamValue(key: string, raw: any): string {
+  const meta = PARAM_LABELS[key]
+  const suffix = meta?.suffix ?? ''
+  if (raw === null || raw === undefined) return 'N/A'
+  if (typeof raw === 'number') {
+    // Use more decimals for small floats, fewer for integers/large values.
+    const abs = Math.abs(raw)
+    let decimals = 2
+    if (Number.isInteger(raw)) decimals = 0
+    else if (abs < 1) decimals = 4
+    return `${fmt(raw, decimals)}${suffix}`
+  }
+  return `${raw}${suffix}`
+}
+
+function buildParamRows(parameters: Record<string, any>): { label: string; value: string }[] {
+  const keys = Object.keys(parameters)
+  const ordered = [
+    ...PARAM_ORDER.filter((k) => keys.includes(k)),
+    ...keys.filter((k) => !PARAM_ORDER.includes(k)).sort(),
+  ]
+  return ordered.map((k) => ({
+    label: PARAM_LABELS[k]?.label ?? k,
+    value: formatParamValue(k, parameters[k]),
+  }))
+}
+
 export default function StatsTable({ summary, parameters, execution, pnlDistribution }: Props) {
   const [openSections, setOpenSections] = useState<Record<string, boolean>>({})
 
@@ -33,13 +93,7 @@ export default function StatsTable({ summary, parameters, execution, pnlDistribu
     },
     {
       title: 'Strategy Parameters',
-      rows: [
-        { label: 'Risk aversion (gamma)', value: `${parameters.risk_aversion}` },
-        { label: 'Order size', value: `${parameters.order_size} BTC` },
-        { label: 'Session duration', value: `${parameters.session_duration}s` },
-        { label: 'Liquidity param (kappa)', value: `${parameters.liquidity_param}` },
-        { label: 'Final sigma', value: `${parameters.final_sigma} $/tick` },
-      ],
+      rows: buildParamRows(parameters),
     },
     {
       title: 'Fill Summary',

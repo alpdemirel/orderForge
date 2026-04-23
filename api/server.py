@@ -97,7 +97,64 @@ def get_strategies():
                     "description": "Trading session length in seconds. AS model uses this for time-remaining calculation.",
                 },
             ],
-        }
+        },
+        {
+            "id": "glosten_milgrom",
+            "name": "Glosten-Milgrom",
+            "description": "Sequential-trade Bayesian market making: updates belief about true value from order flow and quotes zero-profit bid/ask with an adverse-selection spread.",
+            "parameters": [
+                {
+                    "name": "informed_fraction",
+                    "label": "Informed Fraction (alpha)",
+                    "type": "float",
+                    "default": 0.3,
+                    "min": 0.01,
+                    "max": 0.95,
+                    "step": 0.01,
+                    "description": "Share of incoming traders assumed to be informed. Higher alpha widens the adverse-selection spread.",
+                },
+                {
+                    "name": "value_half_range_bps",
+                    "label": "Value Half-Range (bps)",
+                    "type": "float",
+                    "default": 10.0,
+                    "min": 1.0,
+                    "max": 200.0,
+                    "step": 1.0,
+                    "description": "Distance from mid to the assumed V_high / V_low in basis points. Sets the scale of the Bayesian spread.",
+                },
+                {
+                    "name": "belief_decay",
+                    "label": "Belief Decay",
+                    "type": "float",
+                    "default": 0.05,
+                    "min": 0.0,
+                    "max": 0.5,
+                    "step": 0.01,
+                    "description": "Per-tick pull of the posterior belief toward 0.5 (neutral). Prevents belief saturation under long trends.",
+                },
+                {
+                    "name": "order_size",
+                    "label": "Order Size (BTC)",
+                    "type": "float",
+                    "default": 0.01,
+                    "min": 0.001,
+                    "max": 1.0,
+                    "step": 0.001,
+                    "description": "Size of each bid/ask quote in BTC.",
+                },
+                {
+                    "name": "session_duration",
+                    "label": "Session Duration (s)",
+                    "type": "float",
+                    "default": 86400,
+                    "min": 3600,
+                    "max": 86400,
+                    "step": 3600,
+                    "description": "Trading session length in seconds.",
+                },
+            ],
+        },
     ]
 
 
@@ -171,18 +228,19 @@ async def launch_backtest(req: BacktestRequest):
             raise HTTPException(status_code=404, detail=f"No events.log for {day}")
         day_files[day] = str(events_file)
 
-    params = {
-        "risk_aversion": req.parameters.get("risk_aversion", 0.001),
-        "order_size": req.parameters.get("order_size", 0.01),
-        "session_duration": req.parameters.get("session_duration", 86400.0),
-        "default_latency_ms": int(req.parameters.get("default_latency_ms", 50)),
-    }
+    # Separate the infra-level latency knob from per-strategy params so the
+    # job payload stays strategy-agnostic.
+    raw_params = dict(req.parameters or {})
+    default_latency_ms = int(raw_params.pop("default_latency_ms", 50))
+    strategy_params = {k: float(v) for k, v in raw_params.items()}
 
     # Thread-safe queue and event for cross-thread communication
     _jobs[job_id] = {
         "days": req.days,
         "day_files": day_files,
-        "params": params,
+        "strategy_id": req.strategy_id,
+        "strategy_params": strategy_params,
+        "default_latency_ms": default_latency_ms,
         "status": {day: "pending" for day in req.days},
         "results": {},
         "errors": {},
@@ -205,7 +263,9 @@ def _run_day(job_id: str, day: str):
     try:
         result = run_full_analysis(
             capture_file=job["day_files"][day],
-            **job["params"],
+            strategy_id=job["strategy_id"],
+            strategy_params=job["strategy_params"],
+            default_latency_ms=job["default_latency_ms"],
         )
         job["results"][day] = result
         job["status"][day] = "completed"

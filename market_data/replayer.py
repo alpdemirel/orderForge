@@ -141,7 +141,11 @@ class Replayer:
             "depth_asks": asks_float,
         }
 
-        if self.on_market_data is not None:
-            self.on_market_data(local_ts_ms, exch_ts_ms, best_bid_float, best_ask_float, mid_price_float)
-
         self.strategy.on_market_data(payload)
+
+        # Optional spread-series collector — used by sim/analysis.py for charts.
+        if self.on_market_data is not None:
+            self.on_market_data(
+                local_ts_ms, exch_ts_ms,
+                best_bid_float, best_ask_float, mid_price_float,
+            )

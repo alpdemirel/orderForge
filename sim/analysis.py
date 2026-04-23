@@ -17,28 +17,79 @@ from market_data.replayer import Replayer
 from sim.latency_queue import LatencyQueue
 from sim.notifying_exchange import NotifyingExchange
 from strategy.avellaneda_stoikov import AvellanedaStoikovStrategy
+from strategy.glosten_milgrom import GlostenMilgromStrategy
 
 import logging
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s | %(name)s | %(message)s")
 
 
+# ── Strategy registry ────────────────────────────────────────────────────
+# Maps a stable strategy_id (used in the API + UI) to the concrete class.
+STRATEGY_REGISTRY: dict[str, type] = {
+    "avellaneda_stoikov": AvellanedaStoikovStrategy,
+    "glosten_milgrom": GlostenMilgromStrategy,
+}
+
+
+def _display_params(strategy, merged_params: dict) -> dict:
+    """Return a flat dict describing parameters + final state for the UI."""
+    if isinstance(strategy, AvellanedaStoikovStrategy):
+        return {
+            "risk_aversion": merged_params.get("risk_aversion", strategy.gamma),
+            "order_size": merged_params.get("order_size", strategy.order_size),
+            "session_duration": merged_params.get(
+                "session_duration", strategy._session_duration_ms / 1000.0
+            ),
+            "liquidity_param": strategy.k,
+            "final_sigma": round(strategy.sigma, 4),
+        }
+    if isinstance(strategy, GlostenMilgromStrategy):
+        return {
+            "informed_fraction": strategy.alpha,
+            "value_half_range_bps": round(strategy.value_half_range * 10_000, 2),
+            "belief_decay": strategy.belief_decay,
+            "order_size": strategy.order_size,
+            "session_duration": merged_params.get(
+                "session_duration", strategy._session_duration_ms / 1000.0
+            ),
+            "final_belief": round(strategy.belief, 4),
+            "belief_updates": strategy._belief_updates,
+        }
+    return dict(merged_params)
+
+
 def run_full_analysis(
     capture_file: str,
-    risk_aversion: float = 0.001,
-    order_size: float = 0.01,
-    session_duration: float = 86400.0,
+    strategy_id: str = "avellaneda_stoikov",
+    strategy_params: dict | None = None,
     default_latency_ms: int = 50,
+    # Backward-compat kwargs — older callers pass AS params inline.
+    risk_aversion: float | None = None,
+    order_size: float | None = None,
+    session_duration: float | None = None,
 ) -> dict:
     """Run a full replay and return structured results for the UI."""
 
     fp_div = PRICE_MULTIPLIER * QUANTITY_MULTIPLIER
 
+    # ── Resolve strategy + params ────────────────────────────────────────
+    if strategy_id not in STRATEGY_REGISTRY:
+        raise ValueError(
+            f"Unknown strategy_id '{strategy_id}'. "
+            f"Available: {sorted(STRATEGY_REGISTRY)}"
+        )
+    merged_params: dict = dict(strategy_params or {})
+    if risk_aversion is not None:
+        merged_params.setdefault("risk_aversion", risk_aversion)
+    if order_size is not None:
+        merged_params.setdefault("order_size", order_size)
+    if session_duration is not None:
+        merged_params.setdefault("session_duration", session_duration)
+
+    strategy_cls = STRATEGY_REGISTRY[strategy_id]
+
     # ── Build pipeline ───────────────────────────────────────────────────
-    strategy = AvellanedaStoikovStrategy(
-        risk_aversion=risk_aversion,
-        order_size=order_size,
-        session_duration=session_duration,
-    )
+    strategy = strategy_cls(**merged_params)
 
     engine = ExchangeEngine()
     gateway = ExchangeGateway(engine)
@@ -243,13 +294,8 @@ def run_full_analysis(
         "execution": {
             "replay_time_s": round(elapsed, 1),
         },
-        "parameters": {
-            "risk_aversion": risk_aversion,
-            "order_size": order_size,
-            "session_duration": session_duration,
-            "liquidity_param": strategy.k,
-            "final_sigma": round(strategy.sigma, 4),
-        },
+        "strategy_id": strategy_id,
+        "parameters": _display_params(strategy, merged_params),
         "summary": {
             "total_fills": len(fills),
             "buy_fills": len(buy_fills),
