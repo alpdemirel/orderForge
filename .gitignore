@@ -9,3 +9,4 @@ capture_stub_output.log
 capture_stub_output.log
 data/
 .env
+.claude/
