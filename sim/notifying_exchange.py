@@ -43,6 +43,8 @@ class NotifyingExchange:
         return self.gateway.get_order(order_id)
     def get_account_state(self, owner_id: str) -> AccountState:
         return self.gateway.get_account_state(owner_id)
+    def is_balance_enforced(self, owner_id: str) -> bool:
+        return self.gateway.is_balance_enforced(owner_id)
     def get_fee_pool(self) -> int:
         return self.gateway.get_fee_pool()
 

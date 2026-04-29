@@ -9,8 +9,8 @@ const COLORS = ['#58a6ff', '#d29922']
 
 export default function MakerTakerPie({ makerFills, takerFills }: Props) {
   const data = [
-    { name: 'Maker (Passive)', value: makerFills },
-    { name: 'Taker (Aggressive)', value: takerFills },
+    { name: 'Maker', value: makerFills },
+    { name: 'Taker', value: takerFills },
   ]
 
   if (makerFills === 0 && takerFills === 0) {

@@ -14,6 +14,7 @@ export async function launchBacktest(body: {
   strategy_id: string;
   days: string[];
   parameters: Record<string, number>;
+  initial_cash_usd?: number | null;
 }) {
   const res = await fetch(`${BASE}/backtest`, {
     method: 'POST',

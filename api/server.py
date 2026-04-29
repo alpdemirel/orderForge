@@ -61,9 +61,22 @@ class BacktestRequest(BaseModel):
     strategy_id: str
     days: list[str]  # e.g. ["2026-04-15", "2026-03-29"]
     parameters: dict[str, float] = {}
+    # Optional account seeding. When initial_cash_usd is None the strategy
+    # runs unconstrained (legacy behavior); a numeric value enables balance
+    # enforcement.  Base inventory always starts at 0 — the realistic
+    # "fresh account" scenario where the strategy builds inventory itself.
+    initial_cash_usd: float | None = None
 
 
 # ── GET /api/strategies ──────────────────────────────────────────────────
+#
+# Convention for new strategies:
+# Strategies that quote in BTC should declare an "order_size" parameter
+# representing the per-quote clip in BTC.  The frontend EffectiveConfig
+# panel and the engine's balance auto-shrink (BaseStrategy.fit_quote)
+# both rely on that name.  Strategies that don't fit the convention are
+# fine — the EffectiveConfig panel hides itself when "order_size" is
+# absent — but adopting the convention keeps the balance UX consistent.
 
 @app.get("/api/strategies")
 def get_strategies():
@@ -178,11 +191,16 @@ async def launch_backtest(req: BacktestRequest):
             raise HTTPException(status_code=404, detail=f"No events.log for {day}")
         day_files[day] = str(events_file)
 
+    # TODO: generalize when a second strategy lands. Right now the param
+    # names are AS-specific; forward req.parameters generically and dispatch
+    # by req.strategy_id once we have a concrete second example to design
+    # against. See sim/analysis.py for the matching coupling point.
     params = {
         "risk_aversion": req.parameters.get("risk_aversion", 0.001),
         "order_size": req.parameters.get("order_size", 0.01),
         "session_duration": req.parameters.get("session_duration", 86400.0),
         "default_latency_ms": int(req.parameters.get("default_latency_ms", 50)),
+        "initial_cash_usd": req.initial_cash_usd,
     }
 
     # Thread-safe queue and event for cross-thread communication

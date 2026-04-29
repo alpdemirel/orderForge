@@ -24,6 +24,14 @@ class ExchangeGateway:
     def get_account_state(self, owner_id: str) -> AccountState:
         return self._engine.get_account_state(owner_id)
 
+    def seed_account(
+        self, owner_id: str, cash_balance: int = 0, base_position: int = 0,
+    ) -> AccountState:
+        return self._engine.seed_account(owner_id, cash_balance, base_position)
+
+    def is_balance_enforced(self, owner_id: str) -> bool:
+        return self._engine.is_balance_enforced(owner_id)
+
     def get_fee_pool(self) -> int:
         return self._engine.get_fee_pool()
 
