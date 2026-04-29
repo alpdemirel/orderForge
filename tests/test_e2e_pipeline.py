@@ -197,7 +197,7 @@ class TestOrchestrator:
         """sim.main.run() returns a dict with expected keys."""
         from sim.main import run
 
-        summary = run(E2E_FIXTURE, risk_aversion=0.1, order_size=0.01)
+        summary = run(E2E_FIXTURE, strategy_params={"risk_aversion": 0.1, "order_size": 0.01})
 
         assert "fills" in summary
         assert "cash_balance_usd" in summary

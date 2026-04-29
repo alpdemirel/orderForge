@@ -1,7 +1,7 @@
 """
 Reusable backtest analysis module.
 
-Runs the AS strategy on captured data and returns structured results
+Runs the strategies on captured data and returns structured results
 (summary metrics + time-series for charts) as a dict suitable for JSON
 serialisation by the API layer.
 """
@@ -16,7 +16,8 @@ from exchange.models import PRICE_MULTIPLIER, QUANTITY_MULTIPLIER, Side
 from market_data.replayer import Replayer
 from sim.latency_queue import LatencyQueue
 from sim.notifying_exchange import NotifyingExchange
-from strategy.avellaneda_stoikov import AvellanedaStoikovStrategy
+import strategy  # triggers strategy registration
+from strategy import registry as strategy_registry
 
 import logging
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s | %(name)s | %(message)s")
@@ -24,9 +25,8 @@ logging.basicConfig(level=logging.WARNING, format="%(levelname)s | %(name)s | %(
 
 def run_full_analysis(
     capture_file: str,
-    risk_aversion: float = 0.001,
-    order_size: float = 0.01,
-    session_duration: float = 86400.0,
+    strategy_id: str = "avellaneda_stoikov",
+    strategy_params: dict | None = None,
     default_latency_ms: int = 50,
 ) -> dict:
     """Run a full replay and return structured results for the UI."""
@@ -34,22 +34,18 @@ def run_full_analysis(
     fp_div = PRICE_MULTIPLIER * QUANTITY_MULTIPLIER
 
     # ── Build pipeline ───────────────────────────────────────────────────
-    strategy = AvellanedaStoikovStrategy(
-        risk_aversion=risk_aversion,
-        order_size=order_size,
-        session_duration=session_duration,
-    )
+    strategy_instance = strategy_registry.instantiate(strategy_id, strategy_params or {})
 
     engine = ExchangeEngine()
     gateway = ExchangeGateway(engine)
-    notifying = NotifyingExchange(gateway=gateway, on_fill=strategy.on_order_fill)
-    strategy.connect_exchange(notifying)
+    notifying = NotifyingExchange(gateway=gateway, on_fill=strategy_instance.on_order_fill)
+    strategy_instance.connect_exchange(notifying)
 
     latency_queue = LatencyQueue(
         submit_fn=notifying.submit_order,
         cancel_fn=notifying.cancel_order,
     )
-    strategy.connect_latency_queue(latency_queue)
+    strategy_instance.connect_latency_queue(latency_queue)
 
     # Spread time-series collector — sampled during replay
     spread_series: list[dict] = []
@@ -69,7 +65,7 @@ def run_full_analysis(
             })
 
     replayer = Replayer(
-        capture_file, strategy, engine=engine,
+        capture_file, strategy_instance, engine=engine,
         on_fill=notifying.emit_fill,
         latency_queue=latency_queue,
         default_latency_ms=default_latency_ms,
@@ -239,17 +235,17 @@ def run_full_analysis(
     # Calmar ratio
     calmar = (total_pnl / max_dd) if (total_pnl > 0 and max_dd > 0) else 0
 
+    liquidity_param = strategy_registry.get_liquidity_param(strategy_id, strategy_instance)
+
+    parameters_out = dict(strategy_params or {})
+    parameters_out["liquidity_param"] = liquidity_param
+    parameters_out["final_sigma"] = round(strategy_instance.sigma, 4)
+
     return {
         "execution": {
             "replay_time_s": round(elapsed, 1),
         },
-        "parameters": {
-            "risk_aversion": risk_aversion,
-            "order_size": order_size,
-            "session_duration": session_duration,
-            "liquidity_param": strategy.k,
-            "final_sigma": round(strategy.sigma, 4),
-        },
+        "parameters": parameters_out,
         "summary": {
             "total_fills": len(fills),
             "buy_fills": len(buy_fills),
