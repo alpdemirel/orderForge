@@ -1,0 +1,78 @@
+.eff-config {
+  margin-top: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 20px;
+}
+
+.eff-config .section-title {
+  display: block;
+  margin-bottom: 12px;
+}
+
+.eff-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px 24px;
+  margin-bottom: 12px;
+}
+
+.eff-cell {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.eff-label {
+  color: var(--text-muted);
+}
+
+.eff-value {
+  color: var(--text-primary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.eff-banner {
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+}
+
+.eff-banner-ok {
+  background: var(--green-bg);
+  border-color: var(--green);
+  color: var(--green);
+}
+
+.eff-banner-warn {
+  background: var(--yellow-bg);
+  border-color: var(--yellow);
+  color: var(--yellow);
+}
+
+.eff-banner-err {
+  background: var(--red-bg);
+  border-color: var(--red);
+  color: var(--red);
+}
+
+.eff-suggest {
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.eff-suggest b {
+  color: var(--text-primary);
+}
+
+.eff-row.eff-info {
+  font-size: 13px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}

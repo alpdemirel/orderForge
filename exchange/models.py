@@ -47,6 +47,11 @@ class Order:
     # queue-position modeling.  Orders with a lower book_seq arrived
     # earlier and sit ahead in the FIFO queue at a given price level.
     book_seq: int = field(default=0, init=False)
+    # Reservation accounting: how much quote/base is currently held in the
+    # owner's locked balance for this order.  Released proportionally on
+    # fills and fully on cancel.  Zero for MARKET_OWNER_ID orders.
+    locked_quote: int = field(default=0, init=False)
+    locked_base: int = field(default=0, init=False)
 
     def __post_init__(self) -> None:
         self.remaining = self.quantity
@@ -79,6 +84,18 @@ class AccountState:
     cash_balance: int = 0
     base_position: int = 0
     fees_paid: int = 0
+    # Reservations for resting orders. locked_quote is the cash held against
+    # open BUYs; locked_base is the inventory held against open SELLs. They
+    # are independent of cash_balance / base_position — settlement happens
+    # via apply_trade(); locks just gate availability for new orders.
+    locked_quote: int = 0
+    locked_base: int = 0
+
+    def available_quote(self) -> int:
+        return self.cash_balance - self.locked_quote
+
+    def available_base(self) -> int:
+        return self.base_position - self.locked_base
 
     def apply_trade(self, side: Side, price: int, quantity: int, fee: int) -> None:
         notional = price * quantity

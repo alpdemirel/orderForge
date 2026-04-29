@@ -2,11 +2,14 @@
 Avellaneda-Stoikov Market Making Strategy
 Reference: High-frequency trading in a limit order book (Avellaneda & Stoikov, 2008)
 """
+import logging
 import math
 import uuid
 from collections import deque
 from strategy.base import BaseStrategy
 from exchange.models import Side, QUANTITY_MULTIPLIER
+
+logger = logging.getLogger(__name__)
 
 
 class AvellanedaStoikovStrategy(BaseStrategy):
@@ -63,6 +66,12 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         # Active order tracking for cancel-replace cycle
         self._active_order_ids: list[str] = []
 
+        # One-shot config audit: runs on the first tick where mid_price is
+        # known and the account is enforced.  Surfaces likely misconfiguration
+        # (e.g., clip too large for balance) early instead of letting the
+        # strategy quietly under-quote for the whole run.
+        self._config_validated: bool = False
+
     # Internal helpers
     
     def _time_left(self) -> float:
@@ -117,6 +126,47 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         sigma = math.sqrt(weighted_sq_sum) * mid_price
         if math.isfinite(sigma):
             self.sigma = sigma
+
+    def _audit_config(self, mid_price: float) -> None:
+        """One-shot sanity check after the first market tick.
+
+        Only meaningful when balance enforcement is on; otherwise the strategy
+        runs unconstrained and clip size is whatever the user set.
+        """
+        if not self.is_balance_enforced():
+            return
+
+        cash_usd = self.available_quote_usd()
+        base_btc = self.available_base_btc()
+        clip_notional = self.order_size * mid_price
+
+        # Hard error: cannot quote either side at the minimum lot.
+        min_buy_notional = self.MIN_QUANTITY_BTC * mid_price * (
+            1.0 + self.TAKER_FEE_BPS_ESTIMATE / 10_000.0
+        )
+        if cash_usd < min_buy_notional and base_btc < self.MIN_QUANTITY_BTC:
+            logger.error(
+                "Account too small to quote either side at mid=$%.2f. "
+                "Need at least $%.2f cash or %.6f BTC; have $%.2f / %.6f BTC.",
+                mid_price, min_buy_notional, self.MIN_QUANTITY_BTC,
+                cash_usd, base_btc,
+            )
+            return
+
+        # Warning: clip oversized relative to available capacity. fit_quote
+        # will silently auto-shrink, but the user may want to know.
+        if cash_usd > 0 and clip_notional > 0.5 * cash_usd:
+            logger.warning(
+                "Bid clip ($%.2f notional) exceeds 50%% of available cash ($%.2f). "
+                "Bids will auto-shrink to fit; consider lowering --order-size.",
+                clip_notional, cash_usd,
+            )
+        if base_btc > 0 and self.order_size > 0.5 * base_btc:
+            logger.warning(
+                "Ask clip (%.6f BTC) exceeds 50%% of available base (%.6f BTC). "
+                "Asks will auto-shrink to fit.",
+                self.order_size, base_btc,
+            )
 
     def _cancel_active_orders(self) -> None:
         """Cancel all outstanding strategy quotes on the exchange."""
@@ -175,7 +225,21 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         if self._session_start_ms is None:
             self._session_start_ms = event["local_ts_ms"]
 
+        # Keep the strategy's inventory_position in sync with the engine's
+        # authoritative base_position.  Without this, a seeded initial base
+        # is invisible to the reservation-price math (q stays 0 even though
+        # the account is long), and any drift from on_order_fill rounding
+        # would compound over time.  Tolerant of test doubles that omit
+        # get_account_state.
+        get_state = getattr(self.exchange, "get_account_state", None) if self.exchange else None
+        if get_state is not None:
+            self.inventory_position = get_state(self.owner_id).base_position / QUANTITY_MULTIPLIER
+
         mid_price = (event["best_bid"] + event["best_ask"]) / 2.0
+
+        if not self._config_validated:
+            self._audit_config(mid_price)
+            self._config_validated = True
 
         # Quote using volatility from *prior* ticks only (no look-ahead bias),
         # then update volatility with the current tick afterwards.
@@ -189,18 +253,32 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         if bid_price is None:
             return
 
-        # Cancel previous quotes before placing new ones
+        # Capture the orders we're about to cancel so fit_quote can treat
+        # their still-held locks as already released (cancels travel through
+        # the latency queue and may not have drained yet at this instant).
+        soon_to_cancel = tuple(self._active_order_ids)
         self._cancel_active_orders()
 
-        # Generate trackable order IDs
-        bid_id = f"as_bid_{uuid.uuid4().hex[:8]}"
-        ask_id = f"as_ask_{uuid.uuid4().hex[:8]}"
+        bid_qty = self.fit_quote(
+            "buy", bid_price, self.order_size,
+            exclude_locks_from_orders=soon_to_cancel,
+        )
+        ask_qty = self.fit_quote(
+            "sell", ask_price, self.order_size,
+            exclude_locks_from_orders=soon_to_cancel,
+        )
 
-        # Submit new bid/ask limit orders
-        self.submit_order(bid_price, "buy", self.order_size, order_id=bid_id)
-        self.submit_order(ask_price, "sell", self.order_size, order_id=ask_id)
+        new_active: list[str] = []
+        if bid_qty > 0:
+            bid_id = f"as_bid_{uuid.uuid4().hex[:8]}"
+            self.submit_order(bid_price, "buy", bid_qty, order_id=bid_id)
+            new_active.append(bid_id)
+        if ask_qty > 0:
+            ask_id = f"as_ask_{uuid.uuid4().hex[:8]}"
+            self.submit_order(ask_price, "sell", ask_qty, order_id=ask_id)
+            new_active.append(ask_id)
 
-        self._active_order_ids = [bid_id, ask_id]
+        self._active_order_ids = new_active
 
     def on_order_fill(self, fill_event) -> None:
         """

@@ -5,6 +5,7 @@ import StrategyCard from '../components/StrategyCard'
 import DaySelector from '../components/DaySelector'
 import ParameterForm from '../components/ParameterForm'
 import DataDownloadModal from '../components/DataDownloadModal'
+import EffectiveConfig from '../components/EffectiveConfig'
 import './SetupPage.css'
 
 export default function SetupPage() {
@@ -16,6 +17,11 @@ export default function SetupPage() {
   const [params, setParams] = useState<Record<string, number>>({})
   const [launching, setLaunching] = useState(false)
   const [showDataManager, setShowDataManager] = useState(false)
+  // Optional account seeding. Empty cash field = no enforcement (legacy
+  // behavior); any numeric value enables balance-constrained quoting.
+  // Base inventory is intentionally not exposed — realistic backtests
+  // start with zero BTC and let the strategy build inventory itself.
+  const [initialCashUsd, setInitialCashUsd] = useState<string>('')
 
   useEffect(() => {
     fetchStrategies().then((data) => {
@@ -40,10 +46,13 @@ export default function SetupPage() {
     if (!selectedStrategy || selectedDays.length === 0) return
     setLaunching(true)
     try {
+      const cashTrimmed = initialCashUsd.trim()
+      const cashValue = cashTrimmed === '' ? null : parseFloat(cashTrimmed)
       const { job_id } = await launchBacktest({
         strategy_id: selectedStrategy,
         days: selectedDays,
         parameters: params,
+        initial_cash_usd: cashValue,
       })
       navigate(`/running/${job_id}`)
     } catch {
@@ -90,6 +99,45 @@ export default function SetupPage() {
             onClose={() => setShowDataManager(false)} 
             onDataChanged={() => fetchDataDays().then(setDays)} 
         />
+      )}
+
+      <div className="setup-section">
+        <span className="section-title">Account Balance (optional)</span>
+        <div className="param-list">
+          <div className="param-row">
+            <div className="param-header">
+              <label className="param-label">Initial Cash (USD)</label>
+              <input
+                type="number"
+                className="param-input"
+                value={initialCashUsd}
+                min={0}
+                step={100}
+                onChange={(e) => setInitialCashUsd(e.target.value)}
+              />
+            </div>
+            <div className="param-desc">
+              Starting cash balance. Leave empty to disable balance enforcement
+              (strategy quotes any size). Any value enables capacity-aware
+              sizing — orders auto-shrink to fit available funds. Base
+              inventory always starts at 0 BTC; the strategy builds inventory
+              from its own bid fills.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* The EffectiveConfig panel is convention-coupled to a strategy
+          parameter named `order_size` (per-quote BTC clip). Hide it for
+          strategies that don't expose that parameter so future strategies
+          aren't forced into a name they don't have. */}
+      {currentStrategy?.parameters?.some((p: any) => p.name === 'order_size') && (
+        <div className="setup-section">
+          <EffectiveConfig
+            initialCashUsd={initialCashUsd}
+            orderSizeBtc={params.order_size ?? 0}
+          />
+        </div>
       )}
 
       {currentStrategy && (

@@ -59,8 +59,16 @@ def run(
     order_size: float = 0.01,
     session_duration: float = 3600.0,
     default_latency_ms: int = 50,
+    initial_cash_usd: float | None = None,
+    initial_base_btc: float = 0.0,
 ) -> dict:
-    """Run a full replay simulation and return a summary dict."""
+    """Run a full replay simulation and return a summary dict.
+
+    When ``initial_cash_usd`` is provided, the strategy account is seeded
+    and balance enforcement is enabled — orders that would exceed the
+    available cash or base position are rejected by the engine.  When it
+    is None (default), the strategy runs unconstrained as before.
+    """
 
     strategy = AvellanedaStoikovStrategy(
         risk_aversion=risk_aversion,
@@ -69,6 +77,18 @@ def run(
     )
 
     engine, notifying, latency_queue = build_pipeline(strategy)
+
+    if initial_cash_usd is not None:
+        from exchange.models import PRICE_MULTIPLIER, QUANTITY_MULTIPLIER
+        fp_divisor = PRICE_MULTIPLIER * QUANTITY_MULTIPLIER
+        cash_fp = int(round(initial_cash_usd * fp_divisor))
+        base_fp = int(round(initial_base_btc * QUANTITY_MULTIPLIER))
+        engine.seed_account("default", cash_balance=cash_fp, base_position=base_fp)
+        logger.info(
+            "Balance enforcement enabled: cash=$%.2f, base=%.6f BTC",
+            initial_cash_usd, initial_base_btc,
+        )
+
     replayer = Replayer(
         capture_file, strategy, engine=engine, on_fill=notifying.emit_fill,
         latency_queue=latency_queue,
@@ -90,6 +110,8 @@ def run(
     cash_usd = account.cash_balance / fp_divisor
     fees_usd = account.fees_paid / fp_divisor
     position_btc = account.base_position / QUANTITY_MULTIPLIER
+    initial_cash_seeded = initial_cash_usd if initial_cash_usd is not None else 0.0
+    realised_cash_usd = cash_usd - initial_cash_seeded
 
     # Mark-to-market: value unrealised position at final mid-price
     bb = engine.book.best_bid()
@@ -104,7 +126,7 @@ def run(
         mid_price_usd = 0.0
 
     unrealised_usd = position_btc * mid_price_usd
-    total_pnl_usd = cash_usd + unrealised_usd
+    total_pnl_usd = realised_cash_usd + unrealised_usd
 
     # Per-fill breakdown for detailed analysis
     buy_fills = [f for f in notifying.emitted_fills if
@@ -123,7 +145,7 @@ def run(
         "sell_fills": len(sell_fills),
         "buy_volume_btc": buy_volume_btc,
         "sell_volume_btc": sell_volume_btc,
-        "cash_balance_usd": cash_usd,
+        "cash_balance_usd": realised_cash_usd,
         "position_btc": position_btc,
         "fees_paid_usd": fees_usd,
         "unrealised_pnl_usd": unrealised_usd,
@@ -156,6 +178,13 @@ if __name__ == "__main__":
     parser.add_argument("--session-duration", type=float, default=86400.0)
     parser.add_argument("--default-latency-ms", type=int, default=50,
                         help="Synthetic one-way latency (ms) when exchange_ts is absent")
+    parser.add_argument("--initial-cash-usd", type=float, default=None,
+                        help="Starting cash balance in USD. When set, balance "
+                             "enforcement is enabled and orders exceeding "
+                             "available cash/base are rejected.")
+    parser.add_argument("--initial-base-btc", type=float, default=0.0,
+                        help="Starting base position in BTC (default 0). "
+                             "Only takes effect when --initial-cash-usd is set.")
     args = parser.parse_args()
 
     result = run(
@@ -164,6 +193,8 @@ if __name__ == "__main__":
         args.order_size,
         args.session_duration,
         args.default_latency_ms,
+        initial_cash_usd=args.initial_cash_usd,
+        initial_base_btc=args.initial_base_btc,
     )
 
     print("\n" + "=" * 60)

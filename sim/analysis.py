@@ -28,12 +28,22 @@ def run_full_analysis(
     order_size: float = 0.01,
     session_duration: float = 86400.0,
     default_latency_ms: int = 50,
+    initial_cash_usd: float | None = None,
+    initial_base_btc: float = 0.0,
 ) -> dict:
-    """Run a full replay and return structured results for the UI."""
+    """Run a full replay and return structured results for the UI.
+
+    When ``initial_cash_usd`` is provided, the strategy account is seeded
+    and balance enforcement is enabled — orders that exceed available
+    cash or base position are rejected and quotes auto-shrink to fit.
+    """
 
     fp_div = PRICE_MULTIPLIER * QUANTITY_MULTIPLIER
 
     # ── Build pipeline ───────────────────────────────────────────────────
+    # TODO: replace hard-coded AvellanedaStoikovStrategy instantiation with
+    # a strategy registry keyed by strategy_id when a second strategy lands.
+    # The matching API coupling lives at api/server.py launch_backtest.
     strategy = AvellanedaStoikovStrategy(
         risk_aversion=risk_aversion,
         order_size=order_size,
@@ -44,6 +54,13 @@ def run_full_analysis(
     gateway = ExchangeGateway(engine)
     notifying = NotifyingExchange(gateway=gateway, on_fill=strategy.on_order_fill)
     strategy.connect_exchange(notifying)
+
+    if initial_cash_usd is not None:
+        engine.seed_account(
+            strategy.owner_id,
+            cash_balance=int(round(initial_cash_usd * fp_div)),
+            base_position=int(round(initial_base_btc * QUANTITY_MULTIPLIER)),
+        )
 
     latency_queue = LatencyQueue(
         submit_fn=notifying.submit_order,
@@ -114,10 +131,14 @@ def run_full_analysis(
     buy_vwap = (buy_notional / buy_qty_total / PRICE_MULTIPLIER) if buy_qty_total > 0 else 0
     sell_vwap = (sell_notional / sell_qty_total / PRICE_MULTIPLIER) if sell_qty_total > 0 else 0
 
-    # P&L
+    # P&L. cash_usd is the engine's absolute cash balance, which includes
+    # any seeded starting capital — that seed is *not* profit, so we
+    # subtract it to recover the cash delta produced by trading.
     cash_usd = account.cash_balance / fp_div
     fees_usd = account.fees_paid / fp_div
     pos_btc = account.base_position / QUANTITY_MULTIPLIER
+    initial_cash_seeded = initial_cash_usd if initial_cash_usd is not None else 0.0
+    realised_cash_usd = cash_usd - initial_cash_seeded
 
     bb = engine.book.best_bid()
     ba = engine.book.best_ask()
@@ -130,8 +151,10 @@ def run_full_analysis(
     else:
         mid = 0.0
 
+    # Base inventory is always seeded at 0 in current setups, so MTM of the
+    # final position is unrealised PnL with no cost-basis offset to apply.
     unrealised = pos_btc * mid
-    total_pnl = cash_usd + unrealised
+    total_pnl = realised_cash_usd + unrealised
 
     # Maker vs taker breakdown
     maker_fills = [f for f in fills if f.maker_owner_id == "default"]
@@ -268,7 +291,7 @@ def run_full_analysis(
             "fill_price_min": round(min_price, 2),
             "fill_price_max": round(max_price, 2),
             "fill_price_mean": round(mean_price, 2),
-            "realised_cash_usd": round(cash_usd, 2),
+            "realised_cash_usd": round(realised_cash_usd, 2),
             "open_position_btc": round(pos_btc, 8),
             "unrealised_pnl_usd": round(unrealised, 2),
             "fees_paid_usd": round(fees_usd, 2),

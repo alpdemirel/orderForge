@@ -18,7 +18,29 @@ class ExchangeEngine:
     def __init__(self) -> None:
         self.book = OrderBook()
         self._accounts: dict[str, AccountState] = {}
+        # Owners whose balance is enforced.  Only these go through the
+        # reserve/lock path on submit; others are treated as unconstrained,
+        # which keeps legacy tests and infra that never seed an account
+        # working as before.  Strategies that want real balance constraints
+        # must call seed_account() before submitting.
+        self._enforced_owners: set[str] = set()
         self._fee_pool: int = 0
+
+    def seed_account(self, owner_id: str, cash_balance: int = 0, base_position: int = 0) -> AccountState:
+        """Create an owner's starting cash and base position and enable
+        balance enforcement for that owner.
+
+        Fixed-point units throughout: cash in price_ticks * satoshis, base
+        in satoshis.
+        """
+        state = AccountState(
+            owner_id=owner_id,
+            cash_balance=cash_balance,
+            base_position=base_position,
+        )
+        self._accounts[owner_id] = state
+        self._enforced_owners.add(owner_id)
+        return state
 
     def submit_order(self, order: Order) -> ExecutionResult:
         if order.quantity <= 0:
@@ -30,6 +52,16 @@ class ExchangeEngine:
             order.status = OrderStatus.REJECTED
             return ExecutionResult(False, reason="post_only_would_cross")
 
+        # Balance check + reservation. Skipped for MARKET_OWNER_ID (external
+        # L3 liquidity is always admitted, even if the owner is somehow in
+        # the enforced set) and for owners that haven't been seeded — those
+        # run unconstrained, matching prior behavior.
+        if order.owner_id != MARKET_OWNER_ID and order.owner_id in self._enforced_owners:
+            reject_reason = self._reserve_for_order(order)
+            if reject_reason is not None:
+                order.status = OrderStatus.REJECTED
+                return ExecutionResult(False, reason=reject_reason)
+
         fills = self._match(order)
         taker_fee, maker_fees = self._apply_fill_accounting(order, fills)
         if order.remaining <= 0:
@@ -37,6 +69,8 @@ class ExchangeEngine:
             return ExecutionResult(True, fills=fills, taker_fee=taker_fee, maker_fees=maker_fees)
 
         if order.tif == TimeInForce.IOC:
+            # Unfilled remainder is canceled — release whatever lock is left.
+            self._release_full_lock(order)
             order.status = OrderStatus.CANCELED
             return ExecutionResult(
                 True,
@@ -55,6 +89,7 @@ class ExchangeEngine:
         order = self.book.cancel(order_id)
         if order is None:
             return False
+        self._release_full_lock(order)
         order.status = OrderStatus.CANCELED
         return True
 
@@ -63,6 +98,9 @@ class ExchangeEngine:
 
     def get_account_state(self, owner_id: str) -> AccountState:
         return self._accounts.setdefault(owner_id, AccountState(owner_id=owner_id))
+
+    def is_balance_enforced(self, owner_id: str) -> bool:
+        return owner_id in self._enforced_owners
 
     def get_fee_pool(self) -> int:
         return self._fee_pool
@@ -163,6 +201,8 @@ class ExchangeEngine:
             )
             fills.append(fill)
 
+            self._release_fill_lock(best, qty)
+
             if best.remaining > 0:
                 best.status = OrderStatus.PARTIALLY_FILLED
                 self.book.add(best)
@@ -184,6 +224,64 @@ class ExchangeEngine:
             self._fee_pool += maker_fee
 
         return fills, remaining
+
+    def _reserve_for_order(self, order: Order) -> str | None:
+        """Validate available balance and lock funds. Returns reject reason or None."""
+        state = self.get_account_state(order.owner_id)
+        if order.side == Side.BUY:
+            notional = order.price * order.quantity
+            # Conservative: lock against worst-case taker fee.
+            fee_reserve = self._compute_fee(notional, self.TAKER_FEE_BPS)
+            required = notional + fee_reserve
+            if state.available_quote() < required:
+                return "insufficient_quote_balance"
+            order.locked_quote = required
+            state.locked_quote += required
+        else:
+            if state.available_base() < order.quantity:
+                return "insufficient_base_balance"
+            order.locked_base = order.quantity
+            state.locked_base += order.quantity
+        return None
+
+    def _release_fill_lock(self, order: Order, fill_qty: int) -> None:
+        """Release the proportional lock for a filled quantity.
+
+        Called after order.remaining has been decremented for this fill, so
+        when remaining == 0 the residual lock is fully released to absorb
+        any rounding from prior partials.
+        """
+        if order.owner_id == MARKET_OWNER_ID or order.owner_id not in self._enforced_owners:
+            return
+        state = self.get_account_state(order.owner_id)
+        if order.side == Side.BUY:
+            release = (
+                order.locked_quote
+                if order.remaining == 0
+                else (order.locked_quote * fill_qty) // order.quantity
+            )
+            order.locked_quote -= release
+            state.locked_quote -= release
+        else:
+            release = (
+                order.locked_base
+                if order.remaining == 0
+                else (order.locked_base * fill_qty) // order.quantity
+            )
+            order.locked_base -= release
+            state.locked_base -= release
+
+    def _release_full_lock(self, order: Order) -> None:
+        """Release whatever lock remains on the order (cancel / IOC unfilled)."""
+        if order.owner_id == MARKET_OWNER_ID or order.owner_id not in self._enforced_owners:
+            return
+        state = self.get_account_state(order.owner_id)
+        if order.locked_quote:
+            state.locked_quote -= order.locked_quote
+            order.locked_quote = 0
+        if order.locked_base:
+            state.locked_base -= order.locked_base
+            order.locked_base = 0
 
     def _would_cross(self, order: Order) -> bool:
         best_ask = self.book.best_ask()
@@ -224,6 +322,8 @@ class ExchangeEngine:
                 )
             )
 
+            self._release_fill_lock(maker, quantity)
+
             if maker.remaining > 0:
                 maker.status = OrderStatus.PARTIALLY_FILLED
                 self.book.add(maker)
@@ -255,6 +355,10 @@ class ExchangeEngine:
                 quantity=fill.quantity,
                 fee=taker_fee,
             )
+
+            # Maker lock was already released inside _match (the maker order
+            # is the source of truth there).  Release the taker's lock here.
+            self._release_fill_lock(taker, fill.quantity)
 
             self._fee_pool += maker_fee + taker_fee
             taker_fee_total += taker_fee
