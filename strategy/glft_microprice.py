@@ -101,4 +101,5 @@ register(
          "description": "Order book liquidity/density parameter."},
     ],
     liquidity_attr="kappa",
+    category="Stochastic Control",
 )

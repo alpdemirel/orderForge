@@ -23,6 +23,7 @@ def register(
     cls: type,
     parameters: list[dict],
     liquidity_attr: str,
+    category: str = "uncategorized",
 ) -> None:
     """Register a strategy. Called at module import time by each strategy file."""
     _REGISTRY[strategy_id] = {
@@ -32,6 +33,7 @@ def register(
         "cls": cls,
         "parameters": parameters,
         "liquidity_attr": liquidity_attr,
+        "category": category,
     }
 
 
@@ -49,7 +51,7 @@ def list_public_metadata() -> list[dict]:
     """Public-facing metadata (no class refs) for the API /strategies endpoint."""
     return [
         {"id": s["id"], "name": s["name"], "description": s["description"],
-         "parameters": s["parameters"]}
+         "parameters": s["parameters"], "category": s["category"]}
         for s in _REGISTRY.values()
     ]
 

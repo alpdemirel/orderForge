@@ -242,4 +242,5 @@ register(
          "description": "Trading session length in seconds."},
     ],
     liquidity_attr="k",
+    category="Stochastic Control",
 )
