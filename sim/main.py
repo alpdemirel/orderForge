@@ -2,10 +2,10 @@
 End-to-end simulation orchestrator.
 
 Wires the full pipeline:
-    Replayer  →  AvellanedaStoikovStrategy  →  NotifyingExchange  →  ExchangeEngine
+    Replayer  →  Strategy  →  NotifyingExchange  →  ExchangeEngine
 
 Usage:
-    python -m sim.main <capture_file> [--risk-aversion 0.1] [--order-size 0.01]
+    python -m sim.main <capture_file> [--strategy avellaneda_stoikov] [--risk-aversion 0.1] [--order-size 0.01]
 """
 
 import argparse
@@ -15,7 +15,9 @@ from exchange.engine import ExchangeEngine
 from exchange.gateway import ExchangeGateway
 from sim.latency_queue import LatencyQueue
 from sim.notifying_exchange import NotifyingExchange
-from strategy.avellaneda_stoikov import AvellanedaStoikovStrategy
+from strategy.base import BaseStrategy
+import strategy  # triggers strategy registration
+from strategy import registry as strategy_registry
 from market_data.replayer import Replayer
 
 logging.basicConfig(
@@ -26,7 +28,7 @@ logger = logging.getLogger("sim.main")
 
 
 def build_pipeline(
-    strategy: AvellanedaStoikovStrategy,
+    strategy: BaseStrategy,
     engine: ExchangeEngine | None = None,
     use_latency_queue: bool = True,
 ) -> tuple[ExchangeEngine, NotifyingExchange, LatencyQueue | None]:
@@ -55,9 +57,8 @@ def build_pipeline(
 
 def run(
     capture_file: str,
-    risk_aversion: float = 0.1,
-    order_size: float = 0.01,
-    session_duration: float = 3600.0,
+    strategy_id: str = "avellaneda_stoikov",
+    strategy_params: dict | None = None,
     default_latency_ms: int = 50,
     initial_cash_usd: float | None = None,
     initial_base_btc: float = 0.0,
@@ -70,13 +71,9 @@ def run(
     is None (default), the strategy runs unconstrained as before.
     """
 
-    strategy = AvellanedaStoikovStrategy(
-        risk_aversion=risk_aversion,
-        order_size=order_size,
-        session_duration=session_duration,
-    )
+    strategy_instance = strategy_registry.instantiate(strategy_id, strategy_params or {})
 
-    engine, notifying, latency_queue = build_pipeline(strategy)
+    engine, notifying, latency_queue = build_pipeline(strategy_instance)
 
     if initial_cash_usd is not None:
         from exchange.models import PRICE_MULTIPLIER, QUANTITY_MULTIPLIER
@@ -90,7 +87,7 @@ def run(
         )
 
     replayer = Replayer(
-        capture_file, strategy, engine=engine, on_fill=notifying.emit_fill,
+        capture_file, strategy_instance, engine=engine, on_fill=notifying.emit_fill,
         latency_queue=latency_queue,
         default_latency_ms=default_latency_ms,
     )
@@ -173,11 +170,14 @@ def run(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="OrderForge E2E Simulation")
     parser.add_argument("capture_file", help="Path to capture log file")
-    parser.add_argument("--risk-aversion", type=float, default=0.001)
-    parser.add_argument("--order-size", type=float, default=0.01)
-    parser.add_argument("--session-duration", type=float, default=86400.0)
+    parser.add_argument("--strategy", default="avellaneda_stoikov",
+                        choices=strategy_registry.list_ids(),
+                        help="Strategy to run")
     parser.add_argument("--default-latency-ms", type=int, default=50,
                         help="Synthetic one-way latency (ms) when exchange_ts is absent")
+    parser.add_argument("--param", action="append", default=[],
+                        metavar="NAME=VALUE",
+                        help="Strategy parameter (repeatable). Example: --param risk_aversion=0.1")
     parser.add_argument("--initial-cash-usd", type=float, default=None,
                         help="Starting cash balance in USD. When set, balance "
                              "enforcement is enabled and orders exceeding "
@@ -187,12 +187,19 @@ if __name__ == "__main__":
                              "Only takes effect when --initial-cash-usd is set.")
     args = parser.parse_args()
 
+    # Parse --param NAME=VALUE pairs into a dict of floats
+    strategy_params: dict = {}
+    for pair in args.param:
+        if "=" not in pair:
+            parser.error(f"--param must be NAME=VALUE, got '{pair}'")
+        name, value = pair.split("=", 1)
+        strategy_params[name.strip()] = float(value)
+
     result = run(
-        args.capture_file,
-        args.risk_aversion,
-        args.order_size,
-        args.session_duration,
-        args.default_latency_ms,
+        capture_file=args.capture_file,
+        strategy_id=args.strategy,
+        strategy_params=strategy_params,
+        default_latency_ms=args.default_latency_ms,
         initial_cash_usd=args.initial_cash_usd,
         initial_base_btc=args.initial_base_btc,
     )
