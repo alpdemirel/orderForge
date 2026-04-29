@@ -38,7 +38,7 @@ def validate_file(filepath: Path, runs: int = 2) -> bool:
         try:
             # Inject silent logger or mute it to avoid explosive terminal output during checks if needed.
             # But the primary run() handles its own logging cleanly.
-            summary = run(str(filepath), risk_aversion=0.1, order_size=0.01)
+            summary = run(str(filepath), strategy_params={"risk_aversion": 0.1, "order_size": 0.01})
             
             # Convert dictionary to strict JSON string to guarantee structure/type hashability
             json_representation = json.dumps(summary, sort_keys=True)
