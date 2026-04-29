@@ -179,18 +179,23 @@ class GLFTStrategy(BaseStrategy):
         if bid_price is None and ask_price is None:
             return
 
+        soon_to_cancel = tuple(self._active_order_ids)
         self._cancel_active_orders()
         new_ids = []
 
         if bid_price is not None:
-            bid_id = f"glft_bid_{uuid.uuid4().hex[:8]}"
-            self.submit_order(bid_price, "buy", self.order_size, order_id=bid_id)
-            new_ids.append(bid_id)
+            bid_qty = self.fit_quote("buy", bid_price, self.order_size, exclude_locks_from_orders=soon_to_cancel)
+            if bid_qty > 0:
+                bid_id = f"glft_bid_{uuid.uuid4().hex[:8]}"
+                self.submit_order(bid_price, "buy", bid_qty, order_id=bid_id)
+                new_ids.append(bid_id)
 
         if ask_price is not None:
-            ask_id = f"glft_ask_{uuid.uuid4().hex[:8]}"
-            self.submit_order(ask_price, "sell", self.order_size, order_id=ask_id)
-            new_ids.append(ask_id)
+            ask_qty = self.fit_quote("sell", ask_price, self.order_size, exclude_locks_from_orders=soon_to_cancel)
+            if ask_qty > 0:
+                ask_id = f"glft_ask_{uuid.uuid4().hex[:8]}"
+                self.submit_order(ask_price, "sell", ask_qty, order_id=ask_id)
+                new_ids.append(ask_id)
 
         self._active_order_ids = new_ids
 

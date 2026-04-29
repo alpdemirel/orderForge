@@ -50,15 +50,23 @@ class FixedSpreadStrategy(BaseStrategy):
         if bid_price <= 0:
             return
 
+        soon_to_cancel = tuple(self._active_order_ids)
         self._cancel_active_orders()
+        new_ids = []
 
-        bid_id = f"fs_bid_{uuid.uuid4().hex[:8]}"
-        ask_id = f"fs_ask_{uuid.uuid4().hex[:8]}"
+        bid_qty = self.fit_quote("buy", bid_price, self.order_size, exclude_locks_from_orders=soon_to_cancel)
+        if bid_qty > 0:
+            bid_id = f"fs_bid_{uuid.uuid4().hex[:8]}"
+            self.submit_order(bid_price, "buy", bid_qty, order_id=bid_id)
+            new_ids.append(bid_id)
 
-        self.submit_order(bid_price, "buy", self.order_size, order_id=bid_id)
-        self.submit_order(ask_price, "sell", self.order_size, order_id=ask_id)
+        ask_qty = self.fit_quote("sell", ask_price, self.order_size, exclude_locks_from_orders=soon_to_cancel)
+        if ask_qty > 0:
+            ask_id = f"fs_ask_{uuid.uuid4().hex[:8]}"
+            self.submit_order(ask_price, "sell", ask_qty, order_id=ask_id)
+            new_ids.append(ask_id)
 
-        self._active_order_ids = [bid_id, ask_id]
+        self._active_order_ids = new_ids
 
     def on_order_fill(self, fill_event) -> None:
         pass  # no inventory tracking needed for baseline
