@@ -8,6 +8,14 @@ import DataDownloadModal from '../components/DataDownloadModal'
 import EffectiveConfig from '../components/EffectiveConfig'
 import './SetupPage.css'
 
+const CATEGORY_ORDER = [
+  'Baseline',
+  'Stochastic Control',
+  'Microstructure / Order Flow',
+  'Adverse Selection / Risk',
+  'RL / Adaptive',
+]
+
 export default function SetupPage() {
   const navigate = useNavigate()
   const [strategies, setStrategies] = useState<any[]>([])
@@ -17,10 +25,7 @@ export default function SetupPage() {
   const [params, setParams] = useState<Record<string, number>>({})
   const [launching, setLaunching] = useState(false)
   const [showDataManager, setShowDataManager] = useState(false)
-  // Optional account seeding. Empty cash field = no enforcement (legacy
-  // behavior); any numeric value enables balance-constrained quoting.
-  // Base inventory is intentionally not exposed — realistic backtests
-  // start with zero BTC and let the strategy build inventory itself.
+  const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({})
   const [initialCashUsd, setInitialCashUsd] = useState<string>('')
 
   useEffect(() => {
@@ -31,6 +36,10 @@ export default function SetupPage() {
         const defaults: Record<string, number> = {}
         data[0].parameters.forEach((p: any) => { defaults[p.name] = p.default })
         setParams(defaults)
+
+        // Open only the category of the default selected strategy
+        const defaultCat = data[0].category || 'Other'
+        setOpenCategories({ [defaultCat]: true })
       }
     })
     fetchDataDays().then(setDays)
@@ -62,25 +71,69 @@ export default function SetupPage() {
 
   const currentStrategy = strategies.find((s) => s.id === selectedStrategy)
 
+  const strategiesByCategory = strategies.reduce((acc: Record<string, any[]>, s) => {
+    const cat = s.category || 'Other'
+    if (!acc[cat]) acc[cat] = []
+    acc[cat].push(s)
+    return acc
+  }, {})
+
+  const sortedCategories = Object.keys(strategiesByCategory).sort((a, b) => {
+    const ai = CATEGORY_ORDER.indexOf(a)
+    const bi = CATEGORY_ORDER.indexOf(b)
+    if (ai === -1 && bi === -1) return a.localeCompare(b)
+    if (ai === -1) return 1
+    if (bi === -1) return -1
+    return ai - bi
+  })
+
+  const toggleCategory = (cat: string) => {
+    setOpenCategories((prev) => ({ ...prev, [cat]: !prev[cat] }))
+  }
+
+  const handleSelectStrategy = (s: any) => {
+    setSelectedStrategy(s.id)
+    const defaults: Record<string, number> = {}
+    s.parameters.forEach((p: any) => { defaults[p.name] = p.default })
+    setParams(defaults)
+  }
+
   return (
     <div className="setup-page">
       <div className="setup-section">
         <span className="section-title">Select Strategy</span>
-        <div className="strategy-list">
-          {strategies.map((s) => (
-            <StrategyCard
-              key={s.id}
-              strategy={s}
-              selected={selectedStrategy === s.id}
-              onClick={() => {
-                setSelectedStrategy(s.id)
-                const defaults: Record<string, number> = {}
-                s.parameters.forEach((p: any) => { defaults[p.name] = p.default })
-                setParams(defaults)
-              }}
-            />
-          ))}
-        </div>
+        {sortedCategories.map((category) => {
+          const group = strategiesByCategory[category]
+          const isOpen = !!openCategories[category]
+          const hasSelected = group.some((s) => s.id === selectedStrategy)
+          return (
+            <div key={category} className="strategy-group">
+              <button
+                className={`strategy-group-header ${isOpen ? 'open' : ''} ${hasSelected ? 'has-selected' : ''}`}
+                onClick={() => toggleCategory(category)}
+              >
+                <span className="strategy-group-label">{category}</span>
+                <span className="strategy-group-meta">
+                  {hasSelected && <span className="strategy-group-selected-dot" />}
+                  <span className="strategy-group-count">{group.length}</span>
+                  <span className="strategy-group-chevron">{isOpen ? '▲' : '▼'}</span>
+                </span>
+              </button>
+              {isOpen && (
+                <div className="strategy-list">
+                  {group.map((s) => (
+                    <StrategyCard
+                      key={s.id}
+                      strategy={s}
+                      selected={selectedStrategy === s.id}
+                      onClick={() => handleSelectStrategy(s)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
 
       <div className="setup-section">
@@ -95,9 +148,9 @@ export default function SetupPage() {
       </div>
 
       {showDataManager && (
-        <DataDownloadModal 
-            onClose={() => setShowDataManager(false)} 
-            onDataChanged={() => fetchDataDays().then(setDays)} 
+        <DataDownloadModal
+          onClose={() => setShowDataManager(false)}
+          onDataChanged={() => fetchDataDays().then(setDays)}
         />
       )}
 

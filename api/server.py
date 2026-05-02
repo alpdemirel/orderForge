@@ -34,6 +34,8 @@ import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
 
 from sim.analysis import run_full_analysis
+import strategy  # triggers strategy registration
+from strategy import registry as strategy_registry
 
 app = FastAPI(title="OrderForge Backtest API")
 
@@ -80,45 +82,7 @@ class BacktestRequest(BaseModel):
 
 @app.get("/api/strategies")
 def get_strategies():
-    return [
-        {
-            "id": "avellaneda_stoikov",
-            "name": "Avellaneda-Stoikov",
-            "description": "Inventory-aware market making with dynamic bid/ask quotes based on volatility and risk aversion.",
-            "parameters": [
-                {
-                    "name": "risk_aversion",
-                    "label": "Risk Aversion (gamma)",
-                    "type": "float",
-                    "default": 0.001,
-                    "min": 0.0001,
-                    "max": 1.0,
-                    "step": 0.0001,
-                    "description": "Controls how aggressively the strategy skews quotes to reduce inventory.",
-                },
-                {
-                    "name": "order_size",
-                    "label": "Order Size (BTC)",
-                    "type": "float",
-                    "default": 0.01,
-                    "min": 0.001,
-                    "max": 1.0,
-                    "step": 0.001,
-                    "description": "Size of each bid/ask quote in BTC.",
-                },
-                {
-                    "name": "session_duration",
-                    "label": "Session Duration (s)",
-                    "type": "float",
-                    "default": 86400,
-                    "min": 3600,
-                    "max": 86400,
-                    "step": 3600,
-                    "description": "Trading session length in seconds. AS model uses this for time-remaining calculation.",
-                },
-            ],
-        }
-    ]
+    return strategy_registry.list_public_metadata()
 
 
 # ── events.log resolution (handles S3-archived tarballs) ────────────────
@@ -191,14 +155,12 @@ async def launch_backtest(req: BacktestRequest):
             raise HTTPException(status_code=404, detail=f"No events.log for {day}")
         day_files[day] = str(events_file)
 
-    # TODO: generalize when a second strategy lands. Right now the param
-    # names are AS-specific; forward req.parameters generically and dispatch
-    # by req.strategy_id once we have a concrete second example to design
-    # against. See sim/analysis.py for the matching coupling point.
+    # Validate strategy exists before launching
+    strategy_registry.get(req.strategy_id)
+
     params = {
-        "risk_aversion": req.parameters.get("risk_aversion", 0.001),
-        "order_size": req.parameters.get("order_size", 0.01),
-        "session_duration": req.parameters.get("session_duration", 86400.0),
+        "strategy_id": req.strategy_id,
+        "strategy_params": req.parameters,
         "default_latency_ms": int(req.parameters.get("default_latency_ms", 50)),
         "initial_cash_usd": req.initial_cash_usd,
     }

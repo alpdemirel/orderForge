@@ -298,3 +298,27 @@ class AvellanedaStoikovStrategy(BaseStrategy):
             self.inventory_position += filled_amount
         else:
             self.inventory_position -= filled_amount
+
+
+# ── Registry registration ────────────────────────────────────────────────
+from strategy.registry import register
+
+register(
+    strategy_id="avellaneda_stoikov",
+    name="Avellaneda-Stoikov",
+    description="Inventory-aware market making that skews bid/ask quotes symmetrically based on volatility and risk aversion. (Avellaneda & Stoikov, 2008)",
+    cls=AvellanedaStoikovStrategy,
+    parameters=[
+        {"name": "risk_aversion", "label": "Risk Aversion (gamma)", "type": "float",
+         "default": 0.001, "min": 0.0001, "max": 1.0, "step": 0.0001,
+         "description": "Controls how aggressively the strategy skews quotes to reduce inventory."},
+        {"name": "order_size", "label": "Order Size (BTC)", "type": "float",
+         "default": 0.01, "min": 0.001, "max": 1.0, "step": 0.001,
+         "description": "Size of each bid/ask quote in BTC."},
+        {"name": "session_duration", "label": "Session Duration (s)", "type": "float",
+         "default": 86400, "min": 3600, "max": 86400, "step": 3600,
+         "description": "Trading session length in seconds."},
+    ],
+    liquidity_attr="k",
+    category="Stochastic Control",
+)

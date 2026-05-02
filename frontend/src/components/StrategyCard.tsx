@@ -18,7 +18,11 @@ export default function StrategyCard({ strategy, selected, onClick }: Props) {
       className={`strategy-card card ${selected ? 'selected' : ''}`}
       onClick={onClick}
     >
-      <div className="strategy-icon">AS</div>
+      <div className="strategy-icon">
+        {/[\s-]/.test(strategy.name)
+          ? strategy.name.split(/[\s-]/).map(w => w[0]).join('').slice(0, 3).toUpperCase()
+          : strategy.name.slice(0, 2).toUpperCase()}
+      </div>
       <div className="strategy-info">
         <h3>{strategy.name}</h3>
         <p>{strategy.description}</p>
