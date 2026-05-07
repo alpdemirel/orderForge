@@ -33,7 +33,7 @@ class OrderStatus(str, Enum):
     REJECTED = "rejected"
 
 
-@dataclass(slots=True)
+@dataclass
 class Order:
     order_id: str
     side: Side
@@ -57,7 +57,7 @@ class Order:
         self.remaining = self.quantity
 
 
-@dataclass(slots=True)
+@dataclass
 class Fill:
     maker_order_id: str
     taker_order_id: str
@@ -69,7 +69,7 @@ class Fill:
     quantity: int
 
 
-@dataclass(slots=True)
+@dataclass
 class ExecutionResult:
     accepted: bool
     reason: str = ""
@@ -78,7 +78,7 @@ class ExecutionResult:
     maker_fees: dict[str, int] = field(default_factory=dict)
 
 
-@dataclass(slots=True)
+@dataclass
 class AccountState:
     owner_id: str
     cash_balance: int = 0
