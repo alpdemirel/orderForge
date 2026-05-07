@@ -29,7 +29,7 @@ Callers must check event.channel to know the structure.
 
 from __future__ import annotations
 
-import json
+import orjson
 import logging
 from typing import Iterator, Optional
 
@@ -61,11 +61,11 @@ def parse_line(line: str, strict: bool = False) -> Optional[MarketEvent]:
             local_ts_ns = int(parts[0])
             exchange_ts_ns = int(parts[1])
             channel = parts[2]
-            raw_json = json.loads(parts[3])
+            raw_json = orjson.loads(parts[3])
         else:
             local_ts_ns = int(parts[0])
             channel = parts[1]
-            raw_json = json.loads(parts[2])
+            raw_json = orjson.loads(parts[2])
             exchange_ts_ns = 0
 
         return MarketEvent(
