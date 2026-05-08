@@ -29,7 +29,7 @@ from strategy.avellaneda_stoikov import AvellanedaStoikovStrategy
 import logging
 logging.basicConfig(level=logging.WARNING)
 
-EVENTS_FILE = "data/2026-03-29/events.log"
+EVENTS_FILE = sys.argv[1] if len(sys.argv) > 1 else "data/2026-03-29/events.log"
 
 
 class InstrumentedStrategy(AvellanedaStoikovStrategy):
