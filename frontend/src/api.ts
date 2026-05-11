@@ -50,6 +50,11 @@ export async function fetchResults(jobId: string) {
   return res.json();
 }
 
+export async function fetchAccuracy(jobId: string) {
+  const res = await fetch(`${BASE}/backtest/${jobId}/accuracy`);
+  return res.json();
+}
+
 export async function fetchS3Days() {
   const res = await fetch(`${BASE}/s3-days`);
   return res.json();
