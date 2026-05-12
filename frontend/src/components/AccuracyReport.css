@@ -41,9 +41,9 @@
   font-variant-numeric: tabular-nums;
 }
 
-.accuracy-hero-value[data-level="good"]  { color: #22c55e; }
-.accuracy-hero-value[data-level="warn"]  { color: #f59e0b; }
-.accuracy-hero-value[data-level="bad"]   { color: #ef4444; }
+.accuracy-hero-value[data-level="good"],
+.accuracy-hero-value[data-level="warn"],
+.accuracy-hero-value[data-level="bad"]  { color: #ffffff; }
 
 .accuracy-hero-label {
   font-size: 0.8rem;
@@ -53,16 +53,8 @@
 
 /* ── Badge ── */
 .accuracy-badge {
-  font-size: 0.7rem;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 999px;
-  white-space: nowrap;
+  display: none;
 }
-
-.accuracy-badge--good { background: rgba(34,197,94,0.15); color: #22c55e; }
-.accuracy-badge--warn { background: rgba(245,158,11,0.15); color: #f59e0b; }
-.accuracy-badge--bad  { background: rgba(239,68,68,0.15);  color: #ef4444; }
 
 /* ── Divider ── */
 .accuracy-divider {
@@ -94,7 +86,7 @@
 .accuracy-row-sub {
   grid-column: 1 / -1;
   font-size: 0.72rem;
-  color: #f59e0b;
+  color: var(--text-muted, #6b7280);
   margin-top: 1px;
 }
 
