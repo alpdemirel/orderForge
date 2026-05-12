@@ -275,7 +275,51 @@ async def backtest_results(job_id: str):
     }
 
 
-# ── S3 Data Manager Endpoints ──────────────────────────────────────────────
+# ── GET /api/backtest/{job_id}/accuracy ──────────────────────────────────
+#
+# Runs the fill-accuracy diagnostic (same logic as scripts/diagnose_fill_accuracy.py)
+# lazily on first request, then caches the result in the job store.
+
+@app.get("/api/backtest/{job_id}/accuracy")
+async def backtest_accuracy(job_id: str):
+    if job_id not in _jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = _jobs[job_id]
+
+    # Wait for the normal backtest to finish first
+    done = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: job["done_event"].wait(timeout=600.0)
+    )
+    if not done:
+        raise HTTPException(status_code=408, detail="Backtest timed out")
+
+    # Return cached result if available
+    if "accuracy" in job:
+        return {"days": job["accuracy"]}
+
+    # Run accuracy analysis in a thread (takes several minutes per day)
+    def _run_accuracy():
+        import sys as _sys
+        import os as _os
+        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
+        if scripts_dir not in _sys.path:
+            _sys.path.insert(0, scripts_dir)
+        from scripts.diagnose_fill_accuracy import run_accuracy_analysis
+
+        accuracy = {}
+        for day, events_file in job["day_files"].items():
+            try:
+                accuracy[day] = run_accuracy_analysis(events_file)
+            except Exception as e:
+                accuracy[day] = {"error": str(e)}
+        job["accuracy"] = accuracy
+        return accuracy
+
+    accuracy = await asyncio.get_event_loop().run_in_executor(executor, _run_accuracy)
+    return {"days": accuracy}
+
+
 
 S3_BUCKET = "orderforge-s3-bucket"
 _downloads: dict[str, dict[str, Any]] = {}
