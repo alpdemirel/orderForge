@@ -71,6 +71,31 @@ export default function SetupPage() {
 
   const currentStrategy = strategies.find((s) => s.id === selectedStrategy)
 
+  // Block Run if cash is set but insufficient for the selected strategy
+  const _REF_PRICE = 77_000
+  const _FEE_FACTOR = 1.002
+  const _MIN_QTY = 0.0001
+  const _cashValue = initialCashUsd.trim() === '' ? null : parseFloat(initialCashUsd)
+  const _orderSize = params.order_size ?? 0
+  let configBlocked = false
+  if (_cashValue !== null && !Number.isNaN(_cashValue) && _cashValue > 0) {
+    const _minBalance = _MIN_QTY * _REF_PRICE * _FEE_FACTOR
+    if (_cashValue < _minBalance) {
+      configBlocked = true
+    } else {
+      const cc = currentStrategy?.capital_check
+      if (cc && _orderSize > 0) {
+        if (cc.mode === 'inventory') {
+          const maxInv = params[cc.param] ?? 0.5
+          configBlocked = _cashValue < maxInv * _REF_PRICE
+        } else {
+          const required = cc.multiplier * _orderSize * _REF_PRICE * _FEE_FACTOR
+          configBlocked = _cashValue < required
+        }
+      }
+    }
+  }
+
   const strategiesByCategory = strategies.reduce((acc: Record<string, any[]>, s) => {
     const cat = s.category || 'Other'
     if (!acc[cat]) acc[cat] = []
@@ -189,6 +214,8 @@ export default function SetupPage() {
           <EffectiveConfig
             initialCashUsd={initialCashUsd}
             orderSizeBtc={params.order_size ?? 0}
+            capitalCheck={currentStrategy?.capital_check}
+            strategyParams={params}
           />
         </div>
       )}
@@ -206,7 +233,7 @@ export default function SetupPage() {
       <div className="setup-actions">
         <button
           className="btn btn-primary btn-run"
-          disabled={!selectedStrategy || selectedDays.length === 0 || launching}
+          disabled={!selectedStrategy || selectedDays.length === 0 || launching || configBlocked}
           onClick={handleRun}
         >
           {launching ? 'Launching...' : `Run Backtest (${selectedDays.length} day${selectedDays.length !== 1 ? 's' : ''})`}
