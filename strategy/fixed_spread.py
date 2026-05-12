@@ -90,4 +90,5 @@ register(
     ],
     liquidity_attr="half_spread",
     category="Baseline",
+    capital_check={"mode": "clip", "multiplier": 2},  # symmetric quoting, no inventory accumulation — 2× clip is sufficient
 )

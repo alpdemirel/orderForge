@@ -1,8 +1,14 @@
 import './EffectiveConfig.css'
 
+type CapitalCheck =
+  | { mode: 'clip'; multiplier: number }
+  | { mode: 'inventory'; param: string }
+
 interface Props {
   initialCashUsd: string  // raw form value; empty means unconstrained
   orderSizeBtc: number
+  capitalCheck?: CapitalCheck
+  strategyParams?: Record<string, number>
 }
 
 // Reference price used for back-of-envelope sizing math. Not used for
@@ -11,15 +17,19 @@ interface Props {
 const REFERENCE_BTC_PRICE = 77_000
 const TAKER_FEE_FACTOR = 1.002      // 20bps cushion, mirrors engine lock formula
 const MIN_QUANTITY_BTC = 0.0001     // mirrors BaseStrategy.MIN_QUANTITY_BTC
-const HEALTHY_RATIO = 5             // balance ≥ 5× clip notional → green
 
 type Status =
   | { kind: 'unconstrained' }
   | { kind: 'inert'; minBalance: number }
-  | { kind: 'shrink'; effectiveClip: number; suggestedBalance: number; suggestedClip: number }
-  | { kind: 'healthy'; effectiveClip: number; ratio: number }
+  | { kind: 'shrink'; effectiveClip: number; requiredBalance: number; hint: string }
+  | { kind: 'healthy'; effectiveClip: number; ratio: number; hint: string }
 
-function computeStatus(cashStr: string, clip: number): Status {
+function computeStatus(
+  cashStr: string,
+  clip: number,
+  capitalCheck: CapitalCheck,
+  strategyParams: Record<string, number>,
+): Status {
   const trimmed = cashStr.trim()
   if (trimmed === '') return { kind: 'unconstrained' }
 
@@ -32,24 +42,36 @@ function computeStatus(cashStr: string, clip: number): Status {
     return { kind: 'inert', minBalance }
   }
 
-  const targetNotional = clip * REFERENCE_BTC_PRICE * TAKER_FEE_FACTOR
   const capacityBtc = cash / (REFERENCE_BTC_PRICE * TAKER_FEE_FACTOR)
   const effectiveClip = Math.min(clip, capacityBtc)
 
-  if (cash >= HEALTHY_RATIO * targetNotional) {
+  let requiredBalance: number
+  let hint: string
+
+  if (capitalCheck.mode === 'inventory') {
+    const maxInv = strategyParams[capitalCheck.param] ?? 0.5
+    requiredBalance = maxInv * REFERENCE_BTC_PRICE
+    hint = `Needs cash ≥ max inventory (${maxInv} BTC × ~$${REFERENCE_BTC_PRICE.toLocaleString()})`
+  } else {
+    const multiplier = capitalCheck.multiplier
+    requiredBalance = multiplier * clip * REFERENCE_BTC_PRICE * TAKER_FEE_FACTOR
+    hint = `Needs cash ≥ ${multiplier}× clip notional`
+  }
+
+  if (cash >= requiredBalance) {
     return {
       kind: 'healthy',
       effectiveClip,
-      ratio: cash / targetNotional,
+      ratio: cash / (clip * REFERENCE_BTC_PRICE),
+      hint,
     }
   }
 
-  // Shrink mode: suggest matched values
   return {
     kind: 'shrink',
-    effectiveClip: capacityBtc,
-    suggestedBalance: HEALTHY_RATIO * targetNotional,
-    suggestedClip: cash / (HEALTHY_RATIO * REFERENCE_BTC_PRICE * TAKER_FEE_FACTOR),
+    effectiveClip,
+    requiredBalance,
+    hint,
   }
 }
 
@@ -63,8 +85,10 @@ function fmtBtc(n: number): string {
   return `${n.toFixed(6)} BTC`
 }
 
-export default function EffectiveConfig({ initialCashUsd, orderSizeBtc }: Props) {
-  const status = computeStatus(initialCashUsd, orderSizeBtc)
+export default function EffectiveConfig({ initialCashUsd, orderSizeBtc, capitalCheck, strategyParams }: Props) {
+  const check: CapitalCheck = capitalCheck ?? { mode: 'clip', multiplier: 5 }
+  const sparams: Record<string, number> = strategyParams ?? {}
+  const status = computeStatus(initialCashUsd, orderSizeBtc, check, sparams)
 
   if (status.kind === 'unconstrained') {
     return (
@@ -107,18 +131,17 @@ export default function EffectiveConfig({ initialCashUsd, orderSizeBtc }: Props)
 
       {status.kind === 'healthy' && (
         <div className="eff-banner eff-banner-ok">
-          ✓ Healthy — balance is {status.ratio.toFixed(1)}× target clip notional.
-          Strategy can quote at intended size with room for inventory build-up.
+          ✓ Healthy — balance is {status.ratio.toFixed(1)}× target clip notional.{' '}
+          {status.hint}.
         </div>
       )}
 
       {status.kind === 'shrink' && (
         <div className="eff-banner eff-banner-warn">
-          ⚠ Shrink mode — balance is too small to quote at the target clip.
-          Orders will auto-shrink to ~{fmtBtc(status.effectiveClip)}.
+          ⚠ Insufficient balance — {status.hint}.
           <div className="eff-suggest">
-            To match: increase balance to <b>≥ {fmtUsd(status.suggestedBalance)}</b>{' '}
-            or reduce order size to <b>≤ {fmtBtc(status.suggestedClip)}</b>.
+            Increase balance to <b>≥ {fmtUsd(status.requiredBalance)}</b>{' '}
+            or reduce order size / max inventory to fit available funds.
           </div>
         </div>
       )}

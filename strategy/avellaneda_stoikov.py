@@ -321,4 +321,5 @@ register(
     ],
     liquidity_attr="k",
     category="Stochastic Control",
+    capital_check={"mode": "clip", "multiplier": 5},  # inventory accumulates without a hard limit — 5× clip provides buffer for build-up
 )

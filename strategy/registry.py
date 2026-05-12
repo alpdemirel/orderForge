@@ -24,8 +24,16 @@ def register(
     parameters: list[dict],
     liquidity_attr: str,
     category: str = "uncategorized",
+    capital_check: dict | None = None,
 ) -> None:
-    """Register a strategy. Called at module import time by each strategy file."""
+    """Register a strategy. Called at module import time by each strategy file.
+
+    capital_check tells the UI how much cash is needed to run this strategy:
+      {"mode": "clip", "multiplier": N}
+          → healthy when cash ≥ N × order_size × BTC_price
+      {"mode": "inventory", "param": "max_inventory"}
+          → healthy when cash ≥ params["max_inventory"] × BTC_price
+    """
     _REGISTRY[strategy_id] = {
         "id": strategy_id,
         "name": name,
@@ -34,6 +42,7 @@ def register(
         "parameters": parameters,
         "liquidity_attr": liquidity_attr,
         "category": category,
+        "capital_check": capital_check or {"mode": "clip", "multiplier": 5},
     }
 
 
@@ -51,7 +60,8 @@ def list_public_metadata() -> list[dict]:
     """Public-facing metadata (no class refs) for the API /strategies endpoint."""
     return [
         {"id": s["id"], "name": s["name"], "description": s["description"],
-         "parameters": s["parameters"], "category": s["category"]}
+         "parameters": s["parameters"], "category": s["category"],
+         "capital_check": s["capital_check"]}
         for s in _REGISTRY.values()
     ]
 
