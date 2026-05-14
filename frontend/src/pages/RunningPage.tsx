@@ -3,16 +3,20 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { subscribeStatus } from '../api'
 import './RunningPage.css'
 
-interface DayStatus {
+type CellStatus = 'pending' | 'running' | 'completed' | 'error'
+
+interface Cell {
+  label: string
   day: string
-  status: 'pending' | 'running' | 'completed' | 'error'
+  status: CellStatus
   error?: string
 }
 
 export default function RunningPage() {
   const { jobId } = useParams<{ jobId: string }>()
   const navigate = useNavigate()
-  const [statuses, setStatuses] = useState<Record<string, DayStatus>>({})
+  // keyed by "label|||day"
+  const [cells, setCells] = useState<Record<string, Cell>>({})
   const [allDone, setAllDone] = useState(false)
 
   useEffect(() => {
@@ -22,11 +26,13 @@ export default function RunningPage() {
       jobId,
       (update) => {
         if (update.day === '__all__') return
-        setStatuses((prev) => ({
+        const key = `${update.label}|||${update.day}`
+        setCells((prev) => ({
           ...prev,
-          [update.day]: {
+          [key]: {
+            label: update.label,
             day: update.day,
-            status: update.status as DayStatus['status'],
+            status: update.status as CellStatus,
             error: update.error,
           },
         }))
@@ -37,10 +43,17 @@ export default function RunningPage() {
     return () => es.close()
   }, [jobId])
 
-  const entries = Object.values(statuses)
-  const completed = entries.filter((s) => s.status === 'completed').length
-  const total = entries.length
+  const allCells = Object.values(cells)
+  const labels = [...new Set(allCells.map((c) => c.label))].sort()
+  const days = [...new Set(allCells.map((c) => c.day))].sort()
+  const multiStrategy = labels.length > 1
+
+  const completed = allCells.filter((c) => c.status === 'completed').length
+  const total = allCells.length
   const progress = total > 0 ? (completed / total) * 100 : 0
+
+  const getCell = (label: string, day: string) =>
+    cells[`${label}|||${day}`]
 
   return (
     <div className="running-page">
@@ -68,29 +81,65 @@ export default function RunningPage() {
           <span className="progress-label">{completed} / {total} completed</span>
         </div>
 
-        <div className="status-list">
-          {entries
-            .sort((a, b) => a.day.localeCompare(b.day))
-            .map((s) => (
-            <div key={s.day} className={`status-item status-${s.status}`}>
-              <div className="status-icon">
-                {s.status === 'running' && <div className="spinner" />}
-                {s.status === 'completed' && <span className="icon-done">&#10003;</span>}
-                {s.status === 'error' && <span className="icon-error">&#10007;</span>}
-                {s.status === 'pending' && <span className="icon-pending">&#8226;</span>}
-              </div>
-              <div className="status-text">
-                <span className="status-day">{s.day}</span>
-                <span className="status-message">
-                  {s.status === 'running' && 'backtest is running...'}
-                  {s.status === 'completed' && 'backtest completed'}
-                  {s.status === 'error' && `error: ${s.error}`}
-                  {s.status === 'pending' && 'waiting...'}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
+        {multiStrategy ? (
+          /* Strategy × Day matrix */
+          <div className="status-matrix">
+            <table className="matrix-table">
+              <thead>
+                <tr>
+                  <th className="matrix-strategy-col">Strategy</th>
+                  {days.map((day) => (
+                    <th key={day} className="matrix-day-col">{formatDay(day)}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {labels.map((label) => (
+                  <tr key={label}>
+                    <td className="matrix-label">{label}</td>
+                    {days.map((day) => {
+                      const cell = getCell(label, day)
+                      const status = cell?.status ?? 'pending'
+                      return (
+                        <td key={day} className={`matrix-cell cell-${status}`}>
+                          {status === 'running' && <div className="spinner spinner-sm" />}
+                          {status === 'completed' && <span className="icon-done">✓</span>}
+                          {status === 'error' && <span className="icon-error" title={cell?.error}>✗</span>}
+                          {status === 'pending' && <span className="icon-pending">·</span>}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          /* Single strategy: original flat list */
+          <div className="status-list">
+            {allCells
+              .sort((a, b) => a.day.localeCompare(b.day))
+              .map((c) => (
+                <div key={`${c.label}|||${c.day}`} className={`status-item status-${c.status}`}>
+                  <div className="status-icon">
+                    {c.status === 'running' && <div className="spinner" />}
+                    {c.status === 'completed' && <span className="icon-done">&#10003;</span>}
+                    {c.status === 'error' && <span className="icon-error">&#10007;</span>}
+                    {c.status === 'pending' && <span className="icon-pending">&#8226;</span>}
+                  </div>
+                  <div className="status-text">
+                    <span className="status-day">{c.day}</span>
+                    <span className="status-message">
+                      {c.status === 'running' && 'backtest is running...'}
+                      {c.status === 'completed' && 'backtest completed'}
+                      {c.status === 'error' && `error: ${c.error}`}
+                      {c.status === 'pending' && 'waiting...'}
+                    </span>
+                  </div>
+                </div>
+              ))}
+          </div>
+        )}
 
         {allDone && (
           <div className="running-actions">
@@ -105,4 +154,9 @@ export default function RunningPage() {
       </div>
     </div>
   )
+}
+
+function formatDay(dateStr: string) {
+  const d = new Date(dateStr + 'T00:00:00')
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 }
