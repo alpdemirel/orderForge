@@ -154,10 +154,23 @@
 
 .setup-actions {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
   padding: 24px 0;
   border-top: 1px solid var(--border);
   margin-top: 16px;
+}
+
+.capital-warning {
+  font-size: 13px;
+  color: #f59e0b;
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  border-radius: 6px;
+  padding: 8px 16px;
+  max-width: 480px;
+  text-align: center;
 }
 
 .btn-run {
