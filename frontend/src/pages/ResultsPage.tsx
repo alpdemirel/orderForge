@@ -87,10 +87,10 @@ export default function ResultsPage() {
   const chartData = useMemo(() => {
     if (!dayData) return null
     return {
-      pnl_curve: downsample(dayData.pnl_curve ?? [], 400),
-      spread_series: downsample(dayData.spread_series ?? [], 400),
-      inventory_curve: downsample(dayData.inventory_curve ?? [], 400),
-      fill_scatter: downsample(dayData.fill_scatter ?? [], 800),
+      pnl_curve: downsample(dayData.pnl_curve as any[] ?? [], 400),
+      spread_series: downsample(dayData.spread_series as any[] ?? [], 400),
+      inventory_curve: downsample(dayData.inventory_curve as any[] ?? [], 400),
+      fill_scatter: downsample(dayData.fill_scatter as any[] ?? [], 800),
     }
   }, [dayData])
 

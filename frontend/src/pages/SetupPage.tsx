@@ -95,15 +95,22 @@ export default function SetupPage() {
     setOpenCategories((prev) => ({ ...prev, [cat]: !prev[cat] }))
   }
 
-  // Capital validation — block run if any entry is invalid
+  // Capital validation — two severity levels:
+  //   blocked: cash below minimum lot → cannot open any order at all
+  //   warned:  cash below strategy requirement → fit_quote will shrink clips, but runs
   const _REF_PRICE = 77_000
   const _FEE_FACTOR = 1.002
   const _MIN_QTY = 0.0001
   const _cashValue = initialCashUsd.trim() === '' ? null : parseFloat(initialCashUsd)
 
-  const isEntryBlocked = (entry: StrategyEntry): boolean => {
+  const isEntryBlocked = (_entry: StrategyEntry): boolean => {
     if (_cashValue === null || Number.isNaN(_cashValue) || _cashValue <= 0) return false
-    if (_cashValue < _MIN_QTY * _REF_PRICE * _FEE_FACTOR) return true
+    return _cashValue < _MIN_QTY * _REF_PRICE * _FEE_FACTOR
+  }
+
+  const isEntryWarned = (entry: StrategyEntry): boolean => {
+    if (_cashValue === null || Number.isNaN(_cashValue) || _cashValue <= 0) return false
+    if (isEntryBlocked(entry)) return false
     const strat = strategies.find((s) => s.id === entry.strategy_id)
     const cc = strat?.capital_check
     const orderSize = entry.params.order_size ?? 0
@@ -118,6 +125,7 @@ export default function SetupPage() {
   }
 
   const configBlocked = entries.some(isEntryBlocked)
+  const warnedEntries = entries.filter(isEntryWarned)
   const hasValidEntries = entries.some((e) => e.strategy_id !== null)
 
   const handleRun = async () => {
@@ -310,6 +318,13 @@ export default function SetupPage() {
       )}
 
       <div className="setup-actions">
+        {warnedEntries.length > 0 && !configBlocked && (
+          <div className="capital-warning">
+            ⚠ {warnedEntries.length === 1
+              ? `"${strategies.find(s => s.id === warnedEntries[0].strategy_id)?.name ?? 'Strategy'}" will run with a reduced order size to fit available cash.`
+              : `${warnedEntries.length} strategies will run with reduced order sizes to fit available cash.`}
+          </div>
+        )}
         <button
           className="btn btn-primary btn-run"
           disabled={!hasValidEntries || selectedDays.length === 0 || launching || configBlocked}
