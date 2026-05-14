@@ -13,7 +13,7 @@ import math
 import sys
 import os
 import time
-from collections import defaultdict
+from collections import deque
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -33,77 +33,80 @@ EVENTS_FILE = sys.argv[1] if len(sys.argv) > 1 else "data/2026-03-29/events.log"
 
 
 class InstrumentedStrategy(AvellanedaStoikovStrategy):
-    """AS strategy with fill-accuracy instrumentation."""
+    """AS strategy with fill-accuracy instrumentation.
+
+    Performance notes:
+    - _pending_adverse is a deque ordered by resolve_tick; popleft() is O(1)
+      instead of the old O(N) reversed-list-pop pattern.
+    - mid_history replaced by _last_mid/_last_ts (no unbounded list growth).
+    - tick_intervals still accumulated for latency stats; bounded by event count.
+    """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.fill_records = []          # (fill, mid_at_fill, mid_5_ticks_later)
+        self.fill_records = []           # resolved adverse-selection records
         self.quote_count = 0
-        self.quote_survived_count = 0   # quotes that were NOT cancelled inflight
+        self.quote_survived_count = 0
         self.latencies_observed = []
-        self.mid_history = []           # (ts_ms, mid)
-        self._pending_adverse = []      # fills waiting for future mid to measure AS
-        self._ticks_since_fill = defaultdict(int)
-        self.cancel_fail_count = 0      # orders filled during cancel window
         self.tick_intervals = []
+        self.cancel_fail_count = 0
+
+        # Internal state — not public
+        self._last_mid: float = 0.0
+        self._last_ts: int = 0
+        self._tick_count: int = 0
+        # deque of (fill_event, fill_mid, fill_ts, side, resolve_at_tick)
+        # ordered by insertion == ordered by resolve_at_tick, so popleft is O(1)
+        self._pending_adverse: deque = deque()
 
     def on_market_data(self, event):
         mid = (event["best_bid"] + event["best_ask"]) / 2.0
         ts = event["local_ts_ms"]
 
-        # Record tick interval
-        if self.mid_history:
-            self.tick_intervals.append(ts - self.mid_history[-1][0])
+        # Tick interval — only need last ts, not full history
+        if self._last_ts:
+            self.tick_intervals.append(ts - self._last_ts)
+        self._tick_count += 1
+        self._last_ts = ts
+        self._last_mid = mid
 
-        self.mid_history.append((ts, mid))
-
-        # Measure adverse selection: check fills from 5+ ticks ago
-        resolved = []
-        for i, (fill, fill_mid, fill_ts, side) in enumerate(self._pending_adverse):
-            ticks_elapsed = self._ticks_since_fill[id(fill)]
-            self._ticks_since_fill[id(fill)] += 1
-            if ticks_elapsed >= 50:  # measure after 50 ticks
-                self.fill_records.append({
-                    "fill_mid": fill_mid,
-                    "mid_after": mid,
-                    "side": side,
-                    "fill_ts": fill_ts,
-                    "after_ts": ts,
-                    "price": fill.price / PRICE_MULTIPLIER,
-                })
-                resolved.append(i)
-
-        for i in reversed(resolved):
-            f = self._pending_adverse.pop(i)
-            del self._ticks_since_fill[id(f[0])]
+        # Resolve adverse-selection fills whose 50-tick window has passed.
+        # deque is ordered by insertion, so resolve_at_tick is non-decreasing —
+        # we popleft() until we hit a fill not yet ready. O(resolved) total.
+        while self._pending_adverse:
+            fill_event, fill_mid, fill_ts, side, resolve_at = self._pending_adverse[0]
+            if self._tick_count < resolve_at:
+                break
+            self._pending_adverse.popleft()
+            self.fill_records.append({
+                "fill_mid": fill_mid,
+                "mid_after": mid,
+                "side": side,
+                "fill_ts": fill_ts,
+                "after_ts": ts,
+                "price": fill_event.price / PRICE_MULTIPLIER,
+            })
 
         # Track latency
         if self.current_latency_estimate > 0:
             self.latencies_observed.append(self.current_latency_estimate)
 
-        # Check if previous quotes survived (were on the book)
+        # Quote survival: count orders that are still live on the exchange
         if self._latency_queue is not None:
+            get = self.exchange.get_order
             for oid in self._active_order_ids:
-                # If cancel_inflight returns True, the order never reached the book
-                # We check by seeing if the order exists on the exchange
-                order = self.exchange.get_order(oid)
-                if order is not None:
+                if get(oid) is not None:
                     self.quote_survived_count += 1
 
-        # Call parent (which cancel-replaces quotes)
+        # Parent does the actual quoting (cancel-replace cycle)
         super().on_market_data(event)
         self.quote_count += 1
 
     def on_order_fill(self, fill_event):
         super().on_order_fill(fill_event)
 
-        # Record fill for adverse selection analysis
-        if self.mid_history:
-            fill_mid = self.mid_history[-1][1]
-            fill_ts = self.mid_history[-1][0]
-        else:
-            fill_mid = fill_event.price / PRICE_MULTIPLIER
-            fill_ts = 0
+        fill_mid = self._last_mid or fill_event.price / PRICE_MULTIPLIER
+        fill_ts = self._last_ts
 
         if fill_event.maker_owner_id == "default":
             side = fill_event.maker_side
@@ -112,8 +115,9 @@ class InstrumentedStrategy(AvellanedaStoikovStrategy):
         else:
             return
 
-        self._pending_adverse.append((fill_event, fill_mid, fill_ts, side))
-        self._ticks_since_fill[id(fill_event)] = 0
+        # Schedule resolution 50 ticks from now
+        resolve_at = self._tick_count + 50
+        self._pending_adverse.append((fill_event, fill_mid, fill_ts, side, resolve_at))
 
 
 def run():

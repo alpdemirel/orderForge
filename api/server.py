@@ -226,6 +226,10 @@ async def launch_backtest(req: BacktestRequest):
         "done_event": threading.Event(),
         "updates": queue.Queue(),
         "completion_lock": threading.Lock(),  # guards the all-done check
+        # accuracy is pre-computed eagerly once the normal backtest finishes;
+        # _accuracy_future holds a Future[dict] so the endpoint just awaits it.
+        "_accuracy_future": None,
+        "_accuracy_lock": threading.Lock(),
     }
 
     # Launch one thread per (strategy, day) pair
@@ -284,10 +288,43 @@ def _run_day(job_id: str, label: str, day: str):
         if all_done and not job["done_event"].is_set():
             _push_update(job, "__system__", "__all__", "all_done")
             job["done_event"].set()
+            # Kick off accuracy analysis eagerly in background (one process per day)
+            with job["_accuracy_lock"]:
+                if job["_accuracy_future"] is None:
+                    job["_accuracy_future"] = executor.submit(_run_accuracy_eager, job_id)
 
 
 def _push_update(job: dict, label: str, day: str, status: str, error: str = ""):
     job["updates"].put_nowait({"label": label, "day": day, "status": status, "error": error})
+
+
+def _run_accuracy_for_day(events_file: str) -> dict:
+    """Top-level (picklable) wrapper — runs in a child process via sim_executor."""
+    import sys as _sys, os as _os
+    _sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts.diagnose_fill_accuracy import run_accuracy_analysis
+    return run_accuracy_analysis(events_file)
+
+
+def _run_accuracy_eager(job_id: str) -> dict:
+    """Called in a ThreadPoolExecutor thread; fans out one process per day."""
+    job = _jobs[job_id]
+    day_files = job["day_files"]
+
+    # Submit one CPU-bound process per day — all run in parallel on real cores
+    futures = {
+        day: sim_executor.submit(_run_accuracy_for_day, events_file)
+        for day, events_file in day_files.items()
+    }
+    accuracy = {}
+    for day, fut in futures.items():
+        try:
+            accuracy[day] = fut.result()
+        except Exception as e:
+            accuracy[day] = {"error": str(e)}
+
+    job["accuracy"] = accuracy
+    return accuracy
 
 
 # ── GET /api/backtest/{job_id}/status (SSE) ──────────────────────────────
@@ -358,8 +395,10 @@ async def backtest_results(job_id: str):
 
 # ── GET /api/backtest/{job_id}/accuracy ──────────────────────────────────
 #
-# Runs the fill-accuracy diagnostic (same logic as scripts/diagnose_fill_accuracy.py)
-# lazily on first request, then caches the result in the job store.
+# Accuracy is pre-computed eagerly as soon as the normal backtest finishes
+# (kicked off inside _run_day → _run_accuracy_eager).  The endpoint just
+# awaits that Future, so if the user opens the tab after the sim is done the
+# result is instant; if they open it mid-sim it waits gracefully.
 
 @app.get("/api/backtest/{job_id}/accuracy")
 async def backtest_accuracy(job_id: str):
@@ -375,29 +414,18 @@ async def backtest_accuracy(job_id: str):
     if not done:
         raise HTTPException(status_code=408, detail="Backtest timed out")
 
-    # Return cached result if available
+    # Return already-cached result immediately
     if "accuracy" in job:
         return {"days": job["accuracy"]}
 
-    # Run accuracy analysis in a thread (takes several minutes per day)
-    def _run_accuracy():
-        import sys as _sys
-        import os as _os
-        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
-        if scripts_dir not in _sys.path:
-            _sys.path.insert(0, scripts_dir)
-        from scripts.diagnose_fill_accuracy import run_accuracy_analysis
+    # Ensure eager future exists (defensive: shouldn't be None at this point)
+    with job["_accuracy_lock"]:
+        if job["_accuracy_future"] is None:
+            job["_accuracy_future"] = executor.submit(_run_accuracy_eager, job_id)
+    fut = job["_accuracy_future"]
 
-        accuracy = {}
-        for day, events_file in job["day_files"].items():
-            try:
-                accuracy[day] = run_accuracy_analysis(events_file)
-            except Exception as e:
-                accuracy[day] = {"error": str(e)}
-        job["accuracy"] = accuracy
-        return accuracy
-
-    accuracy = await asyncio.get_event_loop().run_in_executor(executor, _run_accuracy)
+    # Await the pre-started future without blocking the event loop
+    accuracy = await asyncio.get_event_loop().run_in_executor(None, fut.result)
     return {"days": accuracy}
 
 
