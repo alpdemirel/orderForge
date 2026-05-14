@@ -39,11 +39,14 @@ from market_data.exceptions import MalformedRecordError
 logger = logging.getLogger(__name__)
 
 
-def parse_line(line: str, strict: bool = False) -> Optional[MarketEvent]:
+def parse_line(line: str | bytes, strict: bool = False) -> Optional[MarketEvent]:
     """
     Parse a capture line. Supports:
       - New (4 fields): <local_ts_ns>|<exchange_ts_ns>|<channel>|<raw_json>
       - Legacy (3 fields): <local_ts_ns>|<channel>|<raw_json> (exchange_ts_ns=0)
+
+    Accepts str or bytes — bytes avoids a redundant decode when reading in
+    binary mode, since orjson.loads() handles both natively.
 
     Returns a MarketEvent or None (permissive mode) / raises (strict mode).
     """
@@ -52,19 +55,22 @@ def parse_line(line: str, strict: bool = False) -> Optional[MarketEvent]:
         return None
 
     try:
-        parts = line.split("|", 3)
+        # Split on b"|" or "|" depending on input type
+        sep = b"|" if isinstance(line, bytes) else "|"
+        parts = line.split(sep, 3)
         if len(parts) < 3:
             raise ValueError(f"Expected at least 3 pipe-delimited parts, got {len(parts)}")
 
         # Detect format: 4 parts and 2nd part is numeric -> new format
-        if len(parts) == 4 and parts[1].lstrip("-").isdigit():
+        p1 = parts[1].lstrip(b"-") if isinstance(parts[1], bytes) else parts[1].lstrip("-")
+        if len(parts) == 4 and p1.isdigit():
             local_ts_ns = int(parts[0])
             exchange_ts_ns = int(parts[1])
-            channel = parts[2]
+            channel = parts[2].decode() if isinstance(parts[2], bytes) else parts[2]
             raw_json = orjson.loads(parts[3])
         else:
             local_ts_ns = int(parts[0])
-            channel = parts[1]
+            channel = parts[1].decode() if isinstance(parts[1], bytes) else parts[1]
             raw_json = orjson.loads(parts[2])
             exchange_ts_ns = 0
 
@@ -86,10 +92,13 @@ def read_capture_file(filepath: str, strict: bool = False) -> Iterator[MarketEve
     """
     Yield MarketEvents from a capture event log or snapshot file.
     Skips malformed lines in permissive mode (default).
+
+    Opens in binary mode so orjson can parse the raw bytes directly,
+    avoiding a redundant UTF-8 decode on every line.
     """
-    with open(filepath, "r", encoding="utf-8") as fh:
+    with open(filepath, "rb") as fh:
         for line in fh:
-            event = parse_line(line, strict=strict)
+            event = parse_line(line, strict=strict)  # type: ignore[arg-type]
             if event is not None:
                 yield event
 

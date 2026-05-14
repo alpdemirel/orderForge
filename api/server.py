@@ -10,7 +10,7 @@ Endpoints:
 """
 
 import asyncio
-import json
+import orjson
 import os
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -306,11 +306,11 @@ async def backtest_status(job_id: str):
             for day, status in label_statuses.items():
                 if status != "pending":
                     error = job["errors"].get(lbl, {}).get(day, "")
-                    yield f"data: {json.dumps({'label': lbl, 'day': day, 'status': status, 'error': error})}\n\n"
+                    yield f"data: {orjson.dumps({'label': lbl, 'day': day, 'status': status, 'error': error}).decode()}\n\n"
 
         # If already all done, send terminal event and stop
         if job["done_event"].is_set():
-            yield f"data: {json.dumps({'label': '__system__', 'day': '__all__', 'status': 'all_done', 'error': ''})}\n\n"
+            yield f"data: {orjson.dumps({'label': '__system__', 'day': '__all__', 'status': 'all_done', 'error': ''}).decode()}\n\n"
             return
 
         # Stream live updates from the thread-safe queue
@@ -324,7 +324,7 @@ async def backtest_status(job_id: str):
                 yield f"data: {{}}\n\n"  # keepalive
                 continue
 
-            yield f"data: {json.dumps(update)}\n\n"
+            yield f"data: {orjson.dumps(update).decode()}\n\n"
 
             if update.get("status") == "all_done":
                 break
@@ -490,11 +490,11 @@ async def download_status(day: str):
     async def event_stream():
         while True:
             if day not in _downloads:
-                yield f"data: {json.dumps({'status': 'unknown'})}\n\n"
+                yield f"data: {orjson.dumps({'status': 'unknown'}).decode()}\n\n"
                 break
                 
             state = _downloads[day]
-            yield f"data: {json.dumps(state)}\n\n"
+            yield f"data: {orjson.dumps(state).decode()}\n\n"
             
             if state["status"] in ("completed", "error"):
                 break
