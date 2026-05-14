@@ -10,10 +10,15 @@ export async function fetchDataDays() {
   return res.json();
 }
 
-export async function launchBacktest(body: {
+export interface StrategyConfig {
   strategy_id: string;
-  days: string[];
   parameters: Record<string, number>;
+  label?: string;
+}
+
+export async function launchBacktest(body: {
+  strategies: StrategyConfig[];
+  days: string[];
   initial_cash_usd?: number | null;
 }) {
   const res = await fetch(`${BASE}/backtest`, {
@@ -26,18 +31,19 @@ export async function launchBacktest(body: {
 
 export function subscribeStatus(
   jobId: string,
-  onUpdate: (data: { day: string; status: string; error?: string }) => void,
+  onUpdate: (data: { label: string; day: string; status: string; error?: string }) => void,
   onDone: () => void,
 ) {
   const es = new EventSource(`${BASE}/backtest/${jobId}/status`);
   es.onmessage = (e) => {
     const data = JSON.parse(e.data);
     if (!data.day) return; // keepalive
-    onUpdate(data);
     if (data.status === 'all_done') {
       es.close();
       onDone();
+      return;
     }
+    onUpdate(data);
   };
   es.onerror = () => {
     es.close();
@@ -47,6 +53,11 @@ export function subscribeStatus(
 
 export async function fetchResults(jobId: string) {
   const res = await fetch(`${BASE}/backtest/${jobId}/results`);
+  return res.json();
+}
+
+export async function fetchAccuracy(jobId: string) {
+  const res = await fetch(`${BASE}/backtest/${jobId}/accuracy`);
   return res.json();
 }
 

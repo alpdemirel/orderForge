@@ -6,8 +6,23 @@
 .results-header {
   display: flex;
   align-items: center;
-  gap: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
   margin-bottom: 24px;
+}
+
+.strategy-tab-bar {
+  flex-basis: 100%;
+  order: -1;
+  margin-bottom: 4px;
+}
+
+.strategy-tab {
+  font-weight: 600;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tab-bar {
@@ -102,4 +117,35 @@
   .charts-grid-small {
     grid-template-columns: 1fr;
   }
+}
+
+/* ── View tab bar (Strategy PnL | Backtest Accuracy) ── */
+.view-tab-bar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 24px;
+  border-bottom: 1px solid var(--border, #2a2d36);
+  padding-bottom: 0;
+}
+
+.view-tab {
+  padding: 10px 20px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary, #9ca3af);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: all 0.15s ease;
+}
+
+.view-tab:hover {
+  color: var(--text-primary, #f9fafb);
+}
+
+.view-tab.active {
+  color: var(--accent, #6366f1);
+  border-bottom-color: var(--accent, #6366f1);
 }

@@ -259,7 +259,7 @@ def run_full_analysis(
 
     parameters_out = dict(strategy_params or {})
     parameters_out["liquidity_param"] = liquidity_param
-    parameters_out["final_sigma"] = round(strategy_instance.sigma, 4)
+    parameters_out["final_sigma"] = round(getattr(strategy_instance, "sigma", 0.0), 4)
 
     return {
         "execution": {

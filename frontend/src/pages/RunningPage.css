@@ -156,6 +156,62 @@
   color: var(--text-secondary);
 }
 
+.status-matrix {
+  overflow-x: auto;
+  margin-bottom: 8px;
+}
+
+.matrix-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.matrix-table th {
+  padding: 8px 12px;
+  text-align: left;
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border-bottom: 1px solid var(--border);
+}
+
+.matrix-strategy-col {
+  min-width: 160px;
+}
+
+.matrix-day-col {
+  text-align: center !important;
+  min-width: 70px;
+}
+
+.matrix-label {
+  padding: 10px 12px;
+  font-weight: 500;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+}
+
+.matrix-cell {
+  text-align: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.cell-completed .icon-done { color: var(--green); font-weight: 700; }
+.cell-error .icon-error { color: var(--red); font-weight: 700; cursor: help; }
+.cell-pending .icon-pending { color: var(--text-muted); font-size: 18px; }
+.cell-running { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+
+.spinner-sm {
+  width: 14px;
+  height: 14px;
+  border-width: 2px;
+  margin: 0 auto;
+}
+
 .running-actions {
   display: flex;
   justify-content: center;

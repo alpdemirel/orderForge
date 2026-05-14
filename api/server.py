@@ -4,14 +4,15 @@ FastAPI backend for OrderForge Backtest UI.
 Endpoints:
   GET  /api/strategies          — available strategies + parameter metadata
   GET  /api/data-days           — available capture days in data/
-  POST /api/backtest            — launch backtest job (multi-day)
-  GET  /api/backtest/{id}/status — SSE stream of per-day progress
+  POST /api/backtest            — launch backtest job (multi-strategy, multi-day)
+  GET  /api/backtest/{id}/status — SSE stream of per-strategy per-day progress
   GET  /api/backtest/{id}/results — full results once complete
 """
 
 import asyncio
-import json
+import orjson
 import os
+from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 # Load secret .env file seamlessly
@@ -21,7 +22,7 @@ import shutil
 import tarfile
 import threading
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +38,15 @@ from sim.analysis import run_full_analysis
 import strategy  # triggers strategy registration
 from strategy import registry as strategy_registry
 
-app = FastAPI(title="OrderForge Backtest API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    sim_executor.shutdown(wait=False, cancel_futures=True)
+    executor.shutdown(wait=False, cancel_futures=True)
+
+
+app = FastAPI(title="OrderForge Backtest API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,14 +63,28 @@ _jobs: dict[str, dict[str, Any]] = {}
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 
-executor = ThreadPoolExecutor(max_workers=3)
+# Thread pool for coordination and IO-bound tasks (S3 downloads, accuracy analysis).
+# Threads just block waiting for their process slot — keep count modest.
+_cpu = os.cpu_count() or 4
+executor = ThreadPoolExecutor(max_workers=_cpu * 2)
+# Process pool for CPU-bound simulations — bypasses the GIL so N strategies run on N cores
+sim_executor = ProcessPoolExecutor(max_workers=_cpu)
 
 
 # ── Models ───────────────────────────────────────────────────────────────
 
-class BacktestRequest(BaseModel):
+class StrategyConfig(BaseModel):
     strategy_id: str
+    parameters: dict[str, float] = {}
+    label: str | None = None  # auto-generated from strategy name if omitted
+
+
+class BacktestRequest(BaseModel):
     days: list[str]  # e.g. ["2026-04-15", "2026-03-29"]
+    # New multi-strategy format
+    strategies: list[StrategyConfig] | None = None
+    # Legacy single-strategy fields (auto-wrapped into strategies[0] if strategies is absent)
+    strategy_id: str | None = None
     parameters: dict[str, float] = {}
     # Optional account seeding. When initial_cash_usd is None the strategy
     # runs unconstrained (legacy behavior); a numeric value enables balance
@@ -155,61 +178,116 @@ async def launch_backtest(req: BacktestRequest):
             raise HTTPException(status_code=404, detail=f"No events.log for {day}")
         day_files[day] = str(events_file)
 
-    # Validate strategy exists before launching
-    strategy_registry.get(req.strategy_id)
+    # Normalize to list of strategy configs (handle legacy single-strategy format)
+    if req.strategies:
+        raw_strategies = req.strategies
+    elif req.strategy_id:
+        raw_strategies = [StrategyConfig(strategy_id=req.strategy_id, parameters=req.parameters)]
+    else:
+        raise HTTPException(status_code=422, detail="Must provide strategies or strategy_id")
 
-    params = {
-        "strategy_id": req.strategy_id,
-        "strategy_params": req.parameters,
-        "default_latency_ms": int(req.parameters.get("default_latency_ms", 50)),
-        "initial_cash_usd": req.initial_cash_usd,
-    }
+    # Validate all strategies exist and resolve display labels
+    strategy_counts: dict[str, int] = {}
+    for sc in raw_strategies:
+        try:
+            strategy_registry.get(sc.strategy_id)
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"Unknown strategy: {sc.strategy_id}")
+        strategy_counts[sc.strategy_id] = strategy_counts.get(sc.strategy_id, 0) + 1
 
-    # Thread-safe queue and event for cross-thread communication
+    same_id_seen: dict[str, int] = {}
+    resolved: list[dict] = []
+    for sc in raw_strategies:
+        if sc.label:
+            label = sc.label
+        else:
+            meta = strategy_registry.get(sc.strategy_id)
+            name = meta["name"]
+            if strategy_counts[sc.strategy_id] > 1:
+                same_id_seen[sc.strategy_id] = same_id_seen.get(sc.strategy_id, 0) + 1
+                label = f"{name} #{same_id_seen[sc.strategy_id]}"
+            else:
+                label = name
+        resolved.append({"strategy_id": sc.strategy_id, "parameters": sc.parameters, "label": label})
+
+    # Reject duplicate labels — they would silently corrupt the job store
+    all_labels = [s["label"] for s in resolved]
+    if len(all_labels) != len(set(all_labels)):
+        raise HTTPException(status_code=422, detail="Strategy labels must be unique")
+
     _jobs[job_id] = {
+        "strategies": resolved,
         "days": req.days,
         "day_files": day_files,
-        "params": params,
-        "status": {day: "pending" for day in req.days},
-        "results": {},
-        "errors": {},
+        "initial_cash_usd": req.initial_cash_usd,
+        "results": {s["label"]: {} for s in resolved},
+        "status": {s["label"]: {day: "pending" for day in req.days} for s in resolved},
+        "errors": {s["label"]: {} for s in resolved},
         "done_event": threading.Event(),
-        "updates": queue.Queue(),  # thread-safe stdlib queue
+        "updates": queue.Queue(),
+        "completion_lock": threading.Lock(),  # guards the all-done check
     }
 
-    # Launch backtests in background threads
-    for day in req.days:
-        executor.submit(_run_day, job_id, day)
+    # Launch one thread per (strategy, day) pair
+    for sc in resolved:
+        for day in req.days:
+            executor.submit(_run_day, job_id, sc["label"], day)
 
     return {"job_id": job_id}
 
 
-def _run_day(job_id: str, day: str):
+def _simulate(capture_file: str, strategy_id: str, strategy_params: dict,
+              default_latency_ms: int, initial_cash_usd: float | None) -> dict:
+    """Runs in a child process — no shared state, pure computation."""
+    return run_full_analysis(
+        capture_file=capture_file,
+        strategy_id=strategy_id,
+        strategy_params=strategy_params,
+        default_latency_ms=default_latency_ms,
+        initial_cash_usd=initial_cash_usd,
+    )
+
+
+def _run_day(job_id: str, label: str, day: str):
     job = _jobs[job_id]
-    job["status"][day] = "running"
-    _push_update(job, day, "running")
+    job["status"][label][day] = "running"
+    _push_update(job, label, day, "running")
+
+    sc = next(s for s in job["strategies"] if s["label"] == label)
+    default_latency_ms = int(sc["parameters"].get("default_latency_ms", 50))
 
     try:
-        result = run_full_analysis(
-            capture_file=job["day_files"][day],
-            **job["params"],
-        )
-        job["results"][day] = result
-        job["status"][day] = "completed"
-        _push_update(job, day, "completed")
+        # Offload to a separate process so all strategies run on real CPU cores in parallel
+        result = sim_executor.submit(
+            _simulate,
+            job["day_files"][day],
+            sc["strategy_id"],
+            sc["parameters"],
+            default_latency_ms,
+            job["initial_cash_usd"],
+        ).result()
+        job["results"][label][day] = result
+        job["status"][label][day] = "completed"
+        _push_update(job, label, day, "completed")
     except Exception as e:
-        job["errors"][day] = str(e)
-        job["status"][day] = "error"
-        _push_update(job, day, "error", error=str(e))
+        job["errors"][label][day] = str(e)
+        job["status"][label][day] = "error"
+        _push_update(job, label, day, "error", error=str(e))
 
-    # Check if all days done
-    if all(s in ("completed", "error") for s in job["status"].values()):
-        _push_update(job, "__all__", "all_done")
-        job["done_event"].set()
+    # Check if all (label, day) pairs are done — lock prevents double all_done emission
+    with job["completion_lock"]:
+        all_done = all(
+            s in ("completed", "error")
+            for label_statuses in job["status"].values()
+            for s in label_statuses.values()
+        )
+        if all_done and not job["done_event"].is_set():
+            _push_update(job, "__system__", "__all__", "all_done")
+            job["done_event"].set()
 
 
-def _push_update(job: dict, day: str, status: str, error: str = ""):
-    job["updates"].put_nowait({"day": day, "status": status, "error": error})
+def _push_update(job: dict, label: str, day: str, status: str, error: str = ""):
+    job["updates"].put_nowait({"label": label, "day": day, "status": status, "error": error})
 
 
 # ── GET /api/backtest/{job_id}/status (SSE) ──────────────────────────────
@@ -222,15 +300,17 @@ async def backtest_status(job_id: str):
     async def event_stream():
         job = _jobs[job_id]
 
-        # Replay current status for any days that already started/finished
+        # Replay current status for any (label, day) pairs that already started/finished
         # before the SSE connection was established (race condition fix)
-        for day, status in job["status"].items():
-            if status != "pending":
-                yield f"data: {json.dumps({'day': day, 'status': status, 'error': job['errors'].get(day, '')})}\n\n"
+        for lbl, label_statuses in job["status"].items():
+            for day, status in label_statuses.items():
+                if status != "pending":
+                    error = job["errors"].get(lbl, {}).get(day, "")
+                    yield f"data: {orjson.dumps({'label': lbl, 'day': day, 'status': status, 'error': error}).decode()}\n\n"
 
         # If already all done, send terminal event and stop
         if job["done_event"].is_set():
-            yield f"data: {json.dumps({'day': '__all__', 'status': 'all_done', 'error': ''})}\n\n"
+            yield f"data: {orjson.dumps({'label': '__system__', 'day': '__all__', 'status': 'all_done', 'error': ''}).decode()}\n\n"
             return
 
         # Stream live updates from the thread-safe queue
@@ -244,7 +324,7 @@ async def backtest_status(job_id: str):
                 yield f"data: {{}}\n\n"  # keepalive
                 continue
 
-            yield f"data: {json.dumps(update)}\n\n"
+            yield f"data: {orjson.dumps(update).decode()}\n\n"
 
             if update.get("status") == "all_done":
                 break
@@ -269,13 +349,58 @@ async def backtest_results(job_id: str):
         raise HTTPException(status_code=408, detail="Backtest timed out")
 
     return {
-        "days": job["results"],
-        "errors": job["errors"],
-        "status": job["status"],
+        "strategies": job["results"],   # {label: {day: result_dict}}
+        "errors": job["errors"],         # {label: {day: error_str}}
+        "status": job["status"],         # {label: {day: status}}
+        "strategy_labels": [s["label"] for s in job["strategies"]],  # ordered list
     }
 
 
-# ── S3 Data Manager Endpoints ──────────────────────────────────────────────
+# ── GET /api/backtest/{job_id}/accuracy ──────────────────────────────────
+#
+# Runs the fill-accuracy diagnostic (same logic as scripts/diagnose_fill_accuracy.py)
+# lazily on first request, then caches the result in the job store.
+
+@app.get("/api/backtest/{job_id}/accuracy")
+async def backtest_accuracy(job_id: str):
+    if job_id not in _jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = _jobs[job_id]
+
+    # Wait for the normal backtest to finish first
+    done = await asyncio.get_event_loop().run_in_executor(
+        None, lambda: job["done_event"].wait(timeout=600.0)
+    )
+    if not done:
+        raise HTTPException(status_code=408, detail="Backtest timed out")
+
+    # Return cached result if available
+    if "accuracy" in job:
+        return {"days": job["accuracy"]}
+
+    # Run accuracy analysis in a thread (takes several minutes per day)
+    def _run_accuracy():
+        import sys as _sys
+        import os as _os
+        scripts_dir = str(Path(__file__).resolve().parent.parent / "scripts")
+        if scripts_dir not in _sys.path:
+            _sys.path.insert(0, scripts_dir)
+        from scripts.diagnose_fill_accuracy import run_accuracy_analysis
+
+        accuracy = {}
+        for day, events_file in job["day_files"].items():
+            try:
+                accuracy[day] = run_accuracy_analysis(events_file)
+            except Exception as e:
+                accuracy[day] = {"error": str(e)}
+        job["accuracy"] = accuracy
+        return accuracy
+
+    accuracy = await asyncio.get_event_loop().run_in_executor(executor, _run_accuracy)
+    return {"days": accuracy}
+
+
 
 S3_BUCKET = "orderforge-s3-bucket"
 _downloads: dict[str, dict[str, Any]] = {}
@@ -365,11 +490,11 @@ async def download_status(day: str):
     async def event_stream():
         while True:
             if day not in _downloads:
-                yield f"data: {json.dumps({'status': 'unknown'})}\n\n"
+                yield f"data: {orjson.dumps({'status': 'unknown'}).decode()}\n\n"
                 break
                 
             state = _downloads[day]
-            yield f"data: {json.dumps(state)}\n\n"
+            yield f"data: {orjson.dumps(state).decode()}\n\n"
             
             if state["status"] in ("completed", "error"):
                 break

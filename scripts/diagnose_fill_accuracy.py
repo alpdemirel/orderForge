@@ -29,7 +29,7 @@ from strategy.avellaneda_stoikov import AvellanedaStoikovStrategy
 import logging
 logging.basicConfig(level=logging.WARNING)
 
-EVENTS_FILE = "data/2026-03-29/events.log"
+EVENTS_FILE = sys.argv[1] if len(sys.argv) > 1 else "data/2026-03-29/events.log"
 
 
 class InstrumentedStrategy(AvellanedaStoikovStrategy):
@@ -334,6 +334,162 @@ def run():
     print(f"\n{'=' * 70}")
     print("  ACCURACY IMPROVEMENT OPPORTUNITIES")
     print("=" * 70)
+
+
+def run_accuracy_analysis(events_file: str) -> dict:
+    """Run the same fill-accuracy diagnostics as run() but return a structured
+    dict instead of printing.  Safe to call from the API server."""
+
+    strategy = InstrumentedStrategy(
+        risk_aversion=0.001,
+        order_size=0.01,
+        session_duration=86400.0,
+    )
+
+    engine = ExchangeEngine()
+    gateway = ExchangeGateway(engine)
+    notifying = NotifyingExchange(gateway=gateway, on_fill=strategy.on_order_fill)
+    strategy.connect_exchange(notifying)
+
+    latency_queue = LatencyQueue(
+        submit_fn=notifying.submit_order,
+        cancel_fn=notifying.cancel_order,
+    )
+    strategy.connect_latency_queue(latency_queue)
+
+    replayer = Replayer(
+        events_file, strategy, engine=engine,
+        on_fill=notifying.emit_fill,
+        latency_queue=latency_queue,
+    )
+
+    replayer.run()
+    fills = notifying.emitted_fills
+
+    result: dict = {}
+
+    # ── 1. LATENCY ────────────────────────────────────────────────────────
+    lats = strategy.latencies_observed
+    if lats:
+        lats_s = sorted(lats)
+        n = len(lats_s)
+        mean_lat = sum(lats) / n
+        var_lat = sum((l - mean_lat) ** 2 for l in lats) / n
+        std_lat = math.sqrt(var_lat)
+        result["latency"] = {
+            "samples": n,
+            "min_ms": lats_s[0],
+            "p10_ms": lats_s[n // 10],
+            "p25_ms": lats_s[n // 4],
+            "median_ms": lats_s[n // 2],
+            "p75_ms": lats_s[3 * n // 4],
+            "p90_ms": lats_s[9 * n // 10],
+            "p99_ms": lats_s[int(n * 0.99)],
+            "max_ms": lats_s[-1],
+            "mean_ms": round(mean_lat, 1),
+            "std_ms": round(std_lat, 1),
+            "cv": round(std_lat / mean_lat, 2) if mean_lat else 0,
+            "high_variability": (std_lat / mean_lat > 0.3) if mean_lat else False,
+        }
+    else:
+        result["latency"] = None
+
+    # ── 2. QUOTE SURVIVAL ─────────────────────────────────────────────────
+    total_orders = strategy.quote_count * 2
+    survival_rate = (strategy.quote_survived_count / total_orders * 100) if total_orders else 0
+    latency_over_tick = False
+    avg_interval = 0.0
+    if strategy.tick_intervals:
+        ti = strategy.tick_intervals
+        avg_interval = sum(ti) / len(ti)
+        if lats:
+            mean_lat_val = result["latency"]["mean_ms"] if result["latency"] else 0
+            latency_over_tick = mean_lat_val > avg_interval
+    result["quote_survival"] = {
+        "total_cycles": strategy.quote_count,
+        "survived": strategy.quote_survived_count,
+        "rate_pct": round(survival_rate, 1),
+        "avg_tick_interval_ms": round(avg_interval, 1),
+        "latency_over_tick": latency_over_tick,
+    }
+
+    # ── 3. ADVERSE SELECTION ──────────────────────────────────────────────
+    records = strategy.fill_records
+    if records:
+        buy_adv, sell_adv = [], []
+        for r in records:
+            mid_change = r["mid_after"] - r["fill_mid"]
+            if r["side"] == Side.BUY:
+                buy_adv.append(mid_change)
+            else:
+                sell_adv.append(-mid_change)
+        all_adv = buy_adv + sell_adv
+        avg_all = sum(all_adv) / len(all_adv) if all_adv else 0
+        pct_adverse = (sum(1 for a in all_adv if a < 0) / len(all_adv) * 100) if all_adv else 0
+
+        result["adverse_selection"] = {
+            "fills_analysed": len(records),
+            "buy_fills": len(buy_adv),
+            "sell_fills": len(sell_adv),
+            "avg_mid_move_usd": round(avg_all, 4),
+            "pct_adversely_selected": round(pct_adverse, 1),
+            "avg_buy_mid_change": round(sum(buy_adv) / len(buy_adv), 4) if buy_adv else 0,
+            "pct_buy_dropped": round(sum(1 for a in buy_adv if a < 0) / len(buy_adv) * 100, 1) if buy_adv else 0,
+            "avg_sell_mid_change": round(sum(sell_adv) / len(sell_adv), 4) if sell_adv else 0,
+            "pct_sell_rose": round(sum(1 for a in sell_adv if a < 0) / len(sell_adv) * 100, 1) if sell_adv else 0,
+        }
+    else:
+        result["adverse_selection"] = None
+
+    # ── 4. FILL TIMING ────────────────────────────────────────────────────
+    fill_ts_list = [r["fill_ts"] for r in records]
+    timing: dict = {}
+    if len(fill_ts_list) >= 2:
+        intervals = [fill_ts_list[i+1] - fill_ts_list[i]
+                     for i in range(len(fill_ts_list) - 1)
+                     if fill_ts_list[i+1] > fill_ts_list[i]]
+        if intervals:
+            isorted = sorted(intervals)
+            n = len(isorted)
+            burst_threshold = isorted[n // 10]
+            bursts = sum(1 for i in intervals if i <= burst_threshold)
+            timing["interval_min_ms"] = isorted[0]
+            timing["interval_p10_ms"] = isorted[n // 10]
+            timing["interval_median_ms"] = isorted[n // 2]
+            timing["interval_p90_ms"] = isorted[9 * n // 10]
+            timing["interval_max_ms"] = isorted[-1]
+            timing["burst_threshold_ms"] = burst_threshold
+            timing["burst_count"] = bursts
+            timing["burst_pct"] = round(bursts / n * 100, 1)
+
+    if fills:
+        maker = sum(1 for f in fills if f.maker_owner_id == "default")
+        taker = len(fills) - maker
+        timing["total_fills"] = len(fills)
+        timing["maker_fills"] = maker
+        timing["taker_fills"] = taker
+        timing["maker_pct"] = round(maker / len(fills) * 100, 1)
+        timing["taker_pct"] = round(taker / len(fills) * 100, 1)
+
+    result["fill_timing"] = timing if timing else None
+
+    # ── 5. QUOTE STALENESS ────────────────────────────────────────────────
+    if records:
+        devs = sorted(abs(r["price"] - r["fill_mid"]) for r in records)
+        n = len(devs)
+        result["quote_staleness"] = {
+            "fills": n,
+            "min_usd": round(devs[0], 2),
+            "p25_usd": round(devs[n // 4], 2),
+            "median_usd": round(devs[n // 2], 2),
+            "p75_usd": round(devs[3 * n // 4], 2),
+            "max_usd": round(devs[-1], 2),
+            "mean_usd": round(sum(devs) / n, 2),
+        }
+    else:
+        result["quote_staleness"] = None
+
+    return result
 
 
 if __name__ == "__main__":

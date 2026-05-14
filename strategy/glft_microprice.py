@@ -222,4 +222,5 @@ register(
     ],
     liquidity_attr="kappa",
     category="Stochastic Control",
+    capital_check={"mode": "inventory", "param": "max_inventory"},  # hard inventory limit known — required cash = max_inventory × BTC price
 )

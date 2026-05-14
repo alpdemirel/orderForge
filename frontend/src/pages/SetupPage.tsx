@@ -16,13 +16,28 @@ const CATEGORY_ORDER = [
   'RL / Adaptive',
 ]
 
+interface StrategyEntry {
+  id: string
+  strategy_id: string | null
+  params: Record<string, number>
+  label: string
+}
+
+function newEntry(strategy: any | null = null): StrategyEntry {
+  const id = crypto.randomUUID()
+  if (!strategy) return { id, strategy_id: null, params: {}, label: '' }
+  const params: Record<string, number> = {}
+  strategy.parameters.forEach((p: any) => { params[p.name] = p.default })
+  return { id, strategy_id: strategy.id, params, label: '' }
+}
+
 export default function SetupPage() {
   const navigate = useNavigate()
   const [strategies, setStrategies] = useState<any[]>([])
   const [days, setDays] = useState<any[]>([])
-  const [selectedStrategy, setSelectedStrategy] = useState<string | null>(null)
+  const [entries, setEntries] = useState<StrategyEntry[]>([])
+  const [activeId, setActiveId] = useState<string>('')
   const [selectedDays, setSelectedDays] = useState<string[]>([])
-  const [params, setParams] = useState<Record<string, number>>({})
   const [launching, setLaunching] = useState(false)
   const [showDataManager, setShowDataManager] = useState(false)
   const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({})
@@ -32,12 +47,9 @@ export default function SetupPage() {
     fetchStrategies().then((data) => {
       setStrategies(data)
       if (data.length > 0) {
-        setSelectedStrategy(data[0].id)
-        const defaults: Record<string, number> = {}
-        data[0].parameters.forEach((p: any) => { defaults[p.name] = p.default })
-        setParams(defaults)
-
-        // Open only the category of the default selected strategy
+        const first = newEntry(data[0])
+        setEntries([first])
+        setActiveId(first.id)
         const defaultCat = data[0].category || 'Other'
         setOpenCategories({ [defaultCat]: true })
       }
@@ -45,22 +57,85 @@ export default function SetupPage() {
     fetchDataDays().then(setDays)
   }, [])
 
+  const activeEntry = entries.find((e) => e.id === activeId) ?? null
+  const activeStrategy = strategies.find((s) => s.id === activeEntry?.strategy_id) ?? null
+
+  const updateActive = (patch: Partial<StrategyEntry>) => {
+    setEntries((prev) => prev.map((e) => e.id === activeId ? { ...e, ...patch } : e))
+  }
+
+  const handleSelectStrategy = (s: any) => {
+    const params: Record<string, number> = {}
+    s.parameters.forEach((p: any) => { params[p.name] = p.default })
+    updateActive({ strategy_id: s.id, params })
+  }
+
+  const handleAddEntry = () => {
+    const defaultStrat = strategies[0] ?? null
+    const entry = newEntry(defaultStrat)
+    setEntries((prev) => [...prev, entry])
+    setActiveId(entry.id)
+  }
+
+  const handleRemoveEntry = (id: string) => {
+    setEntries((prev) => prev.filter((e) => e.id !== id))
+    if (activeId === id) {
+      const next = entries.filter((e) => e.id !== id)
+      if (next.length > 0) setActiveId(next[next.length - 1].id)
+    }
+  }
+
   const toggleDay = (date: string) => {
     setSelectedDays((prev) =>
       prev.includes(date) ? prev.filter((d) => d !== date) : [...prev, date]
     )
   }
 
+  const toggleCategory = (cat: string) => {
+    setOpenCategories((prev) => ({ ...prev, [cat]: !prev[cat] }))
+  }
+
+  // Capital validation — block run if any entry is invalid
+  const _REF_PRICE = 77_000
+  const _FEE_FACTOR = 1.002
+  const _MIN_QTY = 0.0001
+  const _cashValue = initialCashUsd.trim() === '' ? null : parseFloat(initialCashUsd)
+
+  const isEntryBlocked = (entry: StrategyEntry): boolean => {
+    if (_cashValue === null || Number.isNaN(_cashValue) || _cashValue <= 0) return false
+    if (_cashValue < _MIN_QTY * _REF_PRICE * _FEE_FACTOR) return true
+    const strat = strategies.find((s) => s.id === entry.strategy_id)
+    const cc = strat?.capital_check
+    const orderSize = entry.params.order_size ?? 0
+    if (cc && orderSize > 0) {
+      if (cc.mode === 'inventory') {
+        const maxInv = entry.params[cc.param] ?? 0.5
+        return _cashValue < maxInv * _REF_PRICE
+      }
+      return _cashValue < cc.multiplier * orderSize * _REF_PRICE * _FEE_FACTOR
+    }
+    return false
+  }
+
+  const configBlocked = entries.some(isEntryBlocked)
+  const hasValidEntries = entries.some((e) => e.strategy_id !== null)
+
   const handleRun = async () => {
-    if (!selectedStrategy || selectedDays.length === 0) return
+    if (!hasValidEntries || selectedDays.length === 0) return
     setLaunching(true)
     try {
       const cashTrimmed = initialCashUsd.trim()
       const cashValue = cashTrimmed === '' ? null : parseFloat(cashTrimmed)
+      const strategyConfigs = entries
+        .filter((e) => e.strategy_id !== null)
+        .map((e) => ({
+          strategy_id: e.strategy_id!,
+          parameters: e.params,
+          ...(e.label.trim() ? { label: e.label.trim() } : {}),
+        }))
       const { job_id } = await launchBacktest({
-        strategy_id: selectedStrategy,
+        strategies: strategyConfigs,
         days: selectedDays,
-        parameters: params,
         initial_cash_usd: cashValue,
       })
       navigate(`/running/${job_id}`)
@@ -68,8 +143,6 @@ export default function SetupPage() {
       setLaunching(false)
     }
   }
-
-  const currentStrategy = strategies.find((s) => s.id === selectedStrategy)
 
   const strategiesByCategory = strategies.reduce((acc: Record<string, any[]>, s) => {
     const cat = s.category || 'Other'
@@ -87,25 +160,60 @@ export default function SetupPage() {
     return ai - bi
   })
 
-  const toggleCategory = (cat: string) => {
-    setOpenCategories((prev) => ({ ...prev, [cat]: !prev[cat] }))
-  }
-
-  const handleSelectStrategy = (s: any) => {
-    setSelectedStrategy(s.id)
-    const defaults: Record<string, number> = {}
-    s.parameters.forEach((p: any) => { defaults[p.name] = p.default })
-    setParams(defaults)
-  }
-
   return (
     <div className="setup-page">
+      {/* Strategy slot tabs */}
       <div className="setup-section">
         <span className="section-title">Select Strategy</span>
+
+        <div className="strategy-slots">
+          {entries.map((entry, idx) => {
+            const strat = strategies.find((s) => s.id === entry.strategy_id)
+            return (
+              <div
+                key={entry.id}
+                className={`strategy-slot ${entry.id === activeId ? 'active' : ''}`}
+                onClick={() => setActiveId(entry.id)}
+              >
+                <span className="slot-label">
+                  {entry.label.trim() || strat?.name || `Strategy ${idx + 1}`}
+                </span>
+                {entries.length > 1 && (
+                  <button
+                    className="slot-remove"
+                    onClick={(ev) => { ev.stopPropagation(); handleRemoveEntry(entry.id) }}
+                    title="Remove this strategy"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+            )
+          })}
+          <button className="strategy-slot slot-add" onClick={handleAddEntry} title="Add another strategy">
+            + Add
+          </button>
+        </div>
+
+        {/* Optional label for active entry */}
+        {activeEntry && (
+          <div className="slot-label-row">
+            <input
+              type="text"
+              className="slot-label-input"
+              placeholder={activeStrategy?.name ?? 'Strategy name…'}
+              value={activeEntry.label}
+              maxLength={40}
+              onChange={(e) => updateActive({ label: e.target.value })}
+            />
+          </div>
+        )}
+
+        {/* Strategy selector accordion — applies to active entry */}
         {sortedCategories.map((category) => {
           const group = strategiesByCategory[category]
           const isOpen = !!openCategories[category]
-          const hasSelected = group.some((s) => s.id === selectedStrategy)
+          const hasSelected = group.some((s) => s.id === activeEntry?.strategy_id)
           return (
             <div key={category} className="strategy-group">
               <button
@@ -125,7 +233,7 @@ export default function SetupPage() {
                     <StrategyCard
                       key={s.id}
                       strategy={s}
-                      selected={selectedStrategy === s.id}
+                      selected={activeEntry?.strategy_id === s.id}
                       onClick={() => handleSelectStrategy(s)}
                     />
                   ))}
@@ -180,25 +288,23 @@ export default function SetupPage() {
         </div>
       </div>
 
-      {/* The EffectiveConfig panel is convention-coupled to a strategy
-          parameter named `order_size` (per-quote BTC clip). Hide it for
-          strategies that don't expose that parameter so future strategies
-          aren't forced into a name they don't have. */}
-      {currentStrategy?.parameters?.some((p: any) => p.name === 'order_size') && (
+      {activeEntry && activeStrategy?.parameters?.some((p: any) => p.name === 'order_size') && (
         <div className="setup-section">
           <EffectiveConfig
             initialCashUsd={initialCashUsd}
-            orderSizeBtc={params.order_size ?? 0}
+            orderSizeBtc={activeEntry.params.order_size ?? 0}
+            capitalCheck={activeStrategy?.capital_check}
+            strategyParams={activeEntry.params}
           />
         </div>
       )}
 
-      {currentStrategy && (
+      {activeEntry && activeStrategy && (
         <div className="setup-section">
           <ParameterForm
-            params={currentStrategy.parameters}
-            values={params}
-            onChange={(name, value) => setParams((prev) => ({ ...prev, [name]: value }))}
+            params={activeStrategy.parameters}
+            values={activeEntry.params}
+            onChange={(name, value) => updateActive({ params: { ...activeEntry.params, [name]: value } })}
           />
         </div>
       )}
@@ -206,10 +312,12 @@ export default function SetupPage() {
       <div className="setup-actions">
         <button
           className="btn btn-primary btn-run"
-          disabled={!selectedStrategy || selectedDays.length === 0 || launching}
+          disabled={!hasValidEntries || selectedDays.length === 0 || launching || configBlocked}
           onClick={handleRun}
         >
-          {launching ? 'Launching...' : `Run Backtest (${selectedDays.length} day${selectedDays.length !== 1 ? 's' : ''})`}
+          {launching
+            ? 'Launching...'
+            : `Run Backtest (${entries.filter(e => e.strategy_id).length} strateg${entries.filter(e => e.strategy_id).length !== 1 ? 'ies' : 'y'}, ${selectedDays.length} day${selectedDays.length !== 1 ? 's' : ''})`}
         </button>
       </div>
     </div>

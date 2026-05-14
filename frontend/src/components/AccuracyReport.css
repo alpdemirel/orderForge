@@ -1,0 +1,100 @@
+.accuracy-report {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 1.25rem;
+  padding: 1.25rem 0;
+}
+
+/* ── Card ── */
+.accuracy-card {
+  background: var(--bg-card, #1a1d24);
+  border: 1px solid var(--border-color, #2a2d36);
+  border-radius: 12px;
+  padding: 1.25rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.accuracy-card-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted, #6b7280);
+  margin-bottom: 0.25rem;
+}
+
+/* ── Hero metric ── */
+.accuracy-hero {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.25rem;
+}
+
+.accuracy-hero-value {
+  font-size: 2rem;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.accuracy-hero-value[data-level="good"],
+.accuracy-hero-value[data-level="warn"],
+.accuracy-hero-value[data-level="bad"]  { color: #ffffff; }
+
+.accuracy-hero-label {
+  font-size: 0.8rem;
+  color: var(--text-muted, #6b7280);
+  flex: 1;
+}
+
+/* ── Badge ── */
+.accuracy-badge {
+  display: none;
+}
+
+/* ── Divider ── */
+.accuracy-divider {
+  height: 1px;
+  background: var(--border-color, #2a2d36);
+  margin: 0.5rem 0;
+}
+
+/* ── Row ── */
+.accuracy-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  column-gap: 1rem;
+  align-items: start;
+  font-size: 0.82rem;
+  padding: 2px 0;
+}
+
+.accuracy-row-label {
+  color: var(--text-muted, #6b7280);
+}
+
+.accuracy-row-value {
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  text-align: right;
+}
+
+.accuracy-row-sub {
+  grid-column: 1 / -1;
+  font-size: 0.72rem;
+  color: var(--text-muted, #6b7280);
+  margin-top: 1px;
+}
+
+/* ── Error state ── */
+.accuracy-error {
+  color: #ef4444;
+  padding: 1rem;
+  background: rgba(239,68,68,0.08);
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
