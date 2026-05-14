@@ -7,6 +7,88 @@
   margin-bottom: 32px;
 }
 
+.strategy-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.strategy-slot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  transition: border-color 0.15s, background 0.15s;
+  user-select: none;
+}
+
+.strategy-slot:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.strategy-slot.active {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text);
+  font-weight: 500;
+}
+
+.slot-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 0 0 2px;
+  transition: color 0.15s;
+}
+
+.slot-remove:hover {
+  color: var(--danger, #e05);
+}
+
+.slot-add {
+  border-style: dashed;
+  color: var(--accent);
+}
+
+.slot-add:hover {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.slot-label-row {
+  margin-bottom: 12px;
+}
+
+.slot-label-input {
+  width: 100%;
+  padding: 6px 10px;
+  background: var(--bg-input, var(--bg-card));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 13px;
+  box-sizing: border-box;
+}
+
+.slot-label-input::placeholder {
+  color: var(--text-muted);
+}
+
+.slot-label-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .strategy-group {
   margin-top: 8px;
 }

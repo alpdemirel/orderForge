@@ -6,8 +6,23 @@
 .results-header {
   display: flex;
   align-items: center;
-  gap: 20px;
+  flex-wrap: wrap;
+  gap: 12px;
   margin-bottom: 24px;
+}
+
+.strategy-tab-bar {
+  flex-basis: 100%;
+  order: -1;
+  margin-bottom: 4px;
+}
+
+.strategy-tab {
+  font-weight: 600;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tab-bar {
