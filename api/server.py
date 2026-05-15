@@ -227,8 +227,8 @@ async def launch_backtest(req: BacktestRequest):
         "done_event": threading.Event(),
         "updates": queue.Queue(),
         "completion_lock": threading.Lock(),  # guards the all-done check
-        # accuracy is pre-computed eagerly once the normal backtest finishes;
-        # _accuracy_future holds a Future[dict] so the endpoint just awaits it.
+        # accuracy runs in parallel with the backtest from the start — it only
+        # reads events.log so it doesn't need to wait for sim results.
         "_accuracy_future": None,
         "_accuracy_lock": threading.Lock(),
     }
@@ -237,6 +237,11 @@ async def launch_backtest(req: BacktestRequest):
     for sc in resolved:
         for day in req.days:
             executor.submit(_run_day, job_id, sc["label"], day)
+
+    # Kick off accuracy analysis immediately — runs in parallel with the backtest
+    # since it only reads events.log independently. By the time the user views
+    # results and clicks the Accuracy tab, it will already be done (or very close).
+    _jobs[job_id]["_accuracy_future"] = executor.submit(_run_accuracy_eager, job_id)
 
     return {"job_id": job_id}
 
@@ -289,10 +294,6 @@ def _run_day(job_id: str, label: str, day: str):
         if all_done and not job["done_event"].is_set():
             _push_update(job, "__system__", "__all__", "all_done")
             job["done_event"].set()
-            # Kick off accuracy analysis eagerly in background (one process per day)
-            with job["_accuracy_lock"]:
-                if job["_accuracy_future"] is None:
-                    job["_accuracy_future"] = executor.submit(_run_accuracy_eager, job_id)
 
 
 def _push_update(job: dict, label: str, day: str, status: str, error: str = ""):
@@ -400,24 +401,16 @@ async def backtest_accuracy(job_id: str):
 
     job = _jobs[job_id]
 
-    # Wait for the normal backtest to finish first
-    done = await asyncio.get_event_loop().run_in_executor(
-        None, lambda: job["done_event"].wait(timeout=600.0)
-    )
-    if not done:
-        raise HTTPException(status_code=408, detail="Backtest timed out")
-
-    # Return already-cached result immediately
+    # Return already-cached result immediately (common case after first call)
     if "accuracy" in job:
         return {"days": job["accuracy"]}
 
-    # Ensure eager future exists (defensive: shouldn't be None at this point)
-    with job["_accuracy_lock"]:
-        if job["_accuracy_future"] is None:
-            job["_accuracy_future"] = executor.submit(_run_accuracy_eager, job_id)
+    # Accuracy future was started at launch time in parallel with the backtest.
+    # Just await it directly — no need to wait for the backtest to finish first.
     fut = job["_accuracy_future"]
+    if fut is None:
+        raise HTTPException(status_code=500, detail="Accuracy future not initialised")
 
-    # Await the pre-started future without blocking the event loop
     accuracy = await asyncio.get_event_loop().run_in_executor(None, fut.result)
     return {"days": accuracy}
 
