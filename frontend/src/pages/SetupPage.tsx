@@ -23,8 +23,14 @@ interface StrategyEntry {
   label: string
 }
 
+function generateId() {
+  return typeof crypto !== 'undefined' && crypto.randomUUID 
+    ? crypto.randomUUID() 
+    : Date.now().toString(36) + Math.random().toString(36).substring(2);
+}
+
 function newEntry(strategy: any | null = null): StrategyEntry {
-  const id = crypto.randomUUID()
+  const id = generateId()
   if (!strategy) return { id, strategy_id: null, params: {}, label: '' }
   const params: Record<string, number> = {}
   strategy.parameters.forEach((p: any) => { params[p.name] = p.default })
