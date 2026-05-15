@@ -61,6 +61,32 @@ export async function fetchAccuracy(jobId: string) {
   return res.json();
 }
 
+export interface HistoryEntry {
+  job_id: string;
+  timestamp: number;
+  strategy_labels: string[];
+  strategy_configs: { strategy_id: string; label: string }[];
+  days: string[];
+  initial_cash_usd: number | null;
+  summary: Record<string, Record<string, {
+    total_pnl: number;
+    total_fills: number;
+    max_drawdown: number;
+    total_volume_btc: number;
+  }>>;
+  errors: Record<string, string[]>;
+}
+
+export async function fetchHistory(): Promise<HistoryEntry[]> {
+  const res = await fetch(`${BASE}/history`, { cache: 'no-store' });
+  return res.json();
+}
+
+export async function deleteHistoryEntry(jobId: string) {
+  const res = await fetch(`${BASE}/history/${jobId}`, { method: 'DELETE' });
+  return res.json();
+}
+
 export async function fetchS3Days() {
   const res = await fetch(`${BASE}/s3-days`);
   return res.json();

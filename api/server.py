@@ -63,6 +63,9 @@ FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 _jobs: dict[str, dict[str, Any]] = {}
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+HISTORY_DIR = DATA_DIR / "history"
+HISTORY_INDEX = HISTORY_DIR / "index.json"
+_history_lock = threading.Lock()  # guards index.json writes
 
 # Thread pool for coordination and IO-bound tasks (S3 downloads, accuracy analysis).
 # Threads just block waiting for their process slot — keep count modest.
@@ -294,6 +297,96 @@ def _run_day(job_id: str, label: str, day: str):
         if all_done and not job["done_event"].is_set():
             _push_update(job, "__system__", "__all__", "all_done")
             job["done_event"].set()
+            # TEMPORARILY DISABLED for diagnosing hang issue
+            # try:
+            #     executor.submit(_persist_job_to_history, job_id)
+            # except Exception:
+            #     pass
+
+
+def _persist_job_to_history(job_id: str) -> None:
+    """Write full results to disk and append summary to history index.
+
+    Two files per job:
+      - data/history/{job_id}.json  — full results (chart data, fills, etc.)
+      - data/history/index.json     — append-only list of lightweight summaries
+    """
+    if job_id not in _jobs:
+        return
+    job = _jobs[job_id]
+    try:
+        HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+
+        # 1) Full results file
+        full_payload = {
+            "job_id": job_id,
+            "timestamp": time.time(),
+            "strategies": job["results"],
+            "errors": job["errors"],
+            "status": job["status"],
+            "strategy_labels": [s["label"] for s in job["strategies"]],
+            "strategy_configs": job["strategies"],
+            "days": job["days"],
+            "initial_cash_usd": job["initial_cash_usd"],
+        }
+        full_path = HISTORY_DIR / f"{job_id}.json"
+        full_path.write_bytes(orjson.dumps(full_payload))
+
+        # 2) Lightweight summary for the history list
+        summary = {}
+        for label, day_results in job["results"].items():
+            summary[label] = {}
+            for day, result in day_results.items():
+                s = result.get("summary", {})
+                summary[label][day] = {
+                    "total_pnl": s.get("total_pnl", 0.0),
+                    "total_fills": s.get("total_fills", 0),
+                    "max_drawdown": s.get("max_drawdown", 0.0),
+                    "total_volume_btc": s.get("total_volume_btc", 0.0),
+                }
+
+        entry = {
+            "job_id": job_id,
+            "timestamp": full_payload["timestamp"],
+            "strategy_labels": full_payload["strategy_labels"],
+            "strategy_configs": [
+                {"strategy_id": s["strategy_id"], "label": s["label"]}
+                for s in job["strategies"]
+            ],
+            "days": job["days"],
+            "initial_cash_usd": job["initial_cash_usd"],
+            "summary": summary,
+            "errors": {label: list(day_errs.keys()) for label, day_errs in job["errors"].items()},
+        }
+
+        with _history_lock:
+            existing = []
+            if HISTORY_INDEX.exists():
+                try:
+                    existing = orjson.loads(HISTORY_INDEX.read_bytes())
+                except Exception:
+                    existing = []
+            # de-dupe by job_id (re-runs replace old entry)
+            existing = [e for e in existing if e.get("job_id") != job_id]
+            existing.append(entry)
+            HISTORY_INDEX.write_bytes(orjson.dumps(existing))
+    except Exception as e:
+        # Don't crash the backtest just because persistence failed,
+        # but print so we can diagnose if something is wrong.
+        import traceback
+        print(f"[history] persistence failed for {job_id}: {e}")
+        traceback.print_exc()
+
+
+def _load_job_from_history(job_id: str) -> dict | None:
+    """Read a persisted job's full results from disk."""
+    full_path = HISTORY_DIR / f"{job_id}.json"
+    if not full_path.exists():
+        return None
+    try:
+        return orjson.loads(full_path.read_bytes())
+    except Exception:
+        return None
 
 
 def _push_update(job: dict, label: str, day: str, status: str, error: str = ""):
@@ -367,8 +460,17 @@ async def backtest_status(job_id: str):
 
 @app.get("/api/backtest/{job_id}/results")
 async def backtest_results(job_id: str):
+    # Fall back to disk if the job is gone from memory (e.g. server restart)
     if job_id not in _jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
+        persisted = _load_job_from_history(job_id)
+        if persisted is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return {
+            "strategies": persisted["strategies"],
+            "errors": persisted["errors"],
+            "status": persisted["status"],
+            "strategy_labels": persisted["strategy_labels"],
+        }
 
     job = _jobs[job_id]
 
@@ -385,6 +487,39 @@ async def backtest_results(job_id: str):
         "status": job["status"],         # {label: {day: status}}
         "strategy_labels": [s["label"] for s in job["strategies"]],  # ordered list
     }
+
+
+# ── GET /api/history ─────────────────────────────────────────────────────
+
+@app.get("/api/history")
+def get_history():
+    """Return the list of past backtest runs (most recent first)."""
+    if not HISTORY_INDEX.exists():
+        return []
+    try:
+        entries = orjson.loads(HISTORY_INDEX.read_bytes())
+    except Exception:
+        return []
+    # Sort newest first
+    entries.sort(key=lambda e: e.get("timestamp", 0), reverse=True)
+    return entries
+
+
+@app.delete("/api/history/{job_id}")
+def delete_history_entry(job_id: str):
+    """Remove a single history entry and its full-results file."""
+    with _history_lock:
+        full_path = HISTORY_DIR / f"{job_id}.json"
+        if full_path.exists():
+            full_path.unlink()
+        if HISTORY_INDEX.exists():
+            try:
+                existing = orjson.loads(HISTORY_INDEX.read_bytes())
+            except Exception:
+                existing = []
+            existing = [e for e in existing if e.get("job_id") != job_id]
+            HISTORY_INDEX.write_bytes(orjson.dumps(existing))
+    return {"ok": True}
 
 
 # ── GET /api/backtest/{job_id}/accuracy ──────────────────────────────────
