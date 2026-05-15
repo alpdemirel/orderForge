@@ -12,6 +12,7 @@ Endpoints:
 import asyncio
 import orjson
 import os
+import time
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
@@ -327,8 +328,6 @@ def _run_accuracy_eager(job_id: str) -> dict:
     return accuracy
 
 
-# ── GET /api/backtest/{job_id}/status (SSE) ──────────────────────────────
-
 @app.get("/api/backtest/{job_id}/status")
 async def backtest_status(job_id: str):
     if job_id not in _jobs:
@@ -336,35 +335,29 @@ async def backtest_status(job_id: str):
 
     async def event_stream():
         job = _jobs[job_id]
+        last_emitted = {}
+        last_keepalive = time.time()
 
-        # Replay current status for any (label, day) pairs that already started/finished
-        # before the SSE connection was established (race condition fix)
-        for lbl, label_statuses in job["status"].items():
-            for day, status in label_statuses.items():
-                if status != "pending":
-                    error = job["errors"].get(lbl, {}).get(day, "")
-                    yield f"data: {orjson.dumps({'label': lbl, 'day': day, 'status': status, 'error': error}).decode()}\n\n"
-
-        # If already all done, send terminal event and stop
-        if job["done_event"].is_set():
-            yield f"data: {orjson.dumps({'label': '__system__', 'day': '__all__', 'status': 'all_done', 'error': ''}).decode()}\n\n"
-            return
-
-        # Stream live updates from the thread-safe queue
         while True:
-            try:
-                # Poll the thread-safe queue from the async loop
-                update = await asyncio.get_event_loop().run_in_executor(
-                    None, lambda: job["updates"].get(timeout=30.0)
-                )
-            except queue.Empty:
-                yield f"data: {{}}\n\n"  # keepalive
-                continue
-
-            yield f"data: {orjson.dumps(update).decode()}\n\n"
-
-            if update.get("status") == "all_done":
+            # Poll current status to detect changes
+            for lbl, label_statuses in job["status"].items():
+                for day, status in label_statuses.items():
+                    key = (lbl, day)
+                    if status != "pending" and last_emitted.get(key) != status:
+                        error = job["errors"].get(lbl, {}).get(day, "")
+                        yield f"data: {orjson.dumps({'label': lbl, 'day': day, 'status': status, 'error': error}).decode()}\n\n"
+                        last_emitted[key] = status
+            
+            if job["done_event"].is_set():
+                yield f"data: {orjson.dumps({'label': '__system__', 'day': '__all__', 'status': 'all_done', 'error': ''}).decode()}\n\n"
                 break
+                
+            # Send keepalive every 15 seconds
+            if time.time() - last_keepalive > 15.0:
+                yield f"data: {{}}\n\n"
+                last_keepalive = time.time()
+
+            await asyncio.sleep(0.5)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
