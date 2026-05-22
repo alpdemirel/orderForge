@@ -1,6 +1,15 @@
 """
 Avellaneda-Stoikov Market Making Strategy
 Reference: High-frequency trading in a limit order book (Avellaneda & Stoikov, 2008)
+
+Improvements over the baseline:
+  1. Requote threshold: only cancel-replace when mid moves >= requote_threshold USD,
+     reducing quote churn, improving quote survival rate, and lowering staleness.
+  2. Momentum EMA: two exponential moving averages (fast/slow) detect short-term trends.
+     When the market is trending up, the reservation price is shifted higher so the
+     strategy avoids accumulating inventory against the trend, reducing adverse selection.
+  3. Force-requote after fills: inventory changes always trigger an immediate requote
+     so the strategy adapts its skew without waiting for the price to move.
 """
 import logging
 import math
@@ -24,11 +33,21 @@ class AvellanedaStoikovStrategy(BaseStrategy):
     Final quotes:
         bid_price = r - delta
         ask_price = r + delta
+
+    Additional:
+      - Reservation price is adjusted by a momentum EMA signal to follow short-term trends.
+      - Requote threshold prevents unnecessary cancel-replace churn on quiet ticks.
     """
 
     # Volatility estimator: rolling window of mid-price log-returns
-    
     _VOL_WINDOW = 100   # number of mid-price samples to keep
+
+    # Momentum EMA alphas — fast responds to ~10 ticks, slow to ~100 ticks
+    _FAST_ALPHA = 0.10
+    _SLOW_ALPHA = 0.01
+    # When |momentum| exceeds this threshold (as fraction of slow_ema),
+    # halt the adverse side entirely instead of just skewing.
+    _HALT_THRESHOLD = 0.0003
 
     def __init__(
         self,
@@ -36,6 +55,8 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         order_size: float = 1.0,
         session_duration: float = 1.0,
         maker_fee_bps: int = 10,
+        requote_threshold: float = 1.0,
+        trend_skew: float = 0.5,
     ):
         super().__init__()
 
@@ -43,11 +64,24 @@ class AvellanedaStoikovStrategy(BaseStrategy):
             raise ValueError(f"risk_aversion (gamma) must be positive, got {risk_aversion}")
         if session_duration <= 0:
             raise ValueError(f"session_duration must be positive, got {session_duration}")
+        if requote_threshold < 0:
+            raise ValueError(f"requote_threshold must be >= 0, got {requote_threshold}")
 
         # AS model parameters (gamma tuned for dollar-denominated sigma)
         self.gamma = risk_aversion      # Inventory risk aversion (gamma)
         self.k = 1.5                    # Order book liquidity / density parameter (kappa)
         self._maker_fee_rate = maker_fee_bps / 10_000  # 10 BPS = 0.001
+
+        # Requote threshold: only cancel-replace when mid moves by this much (USD)
+        self.requote_threshold = requote_threshold
+        self._last_quoted_mid: float | None = None
+        self._force_requote: bool = False  # set True after a fill
+
+        # Trend skew: fraction of half-spread to shift the reservation price per unit
+        # of normalised EMA momentum.  0 = off, 1 = very aggressive.
+        self.trend_skew = trend_skew
+        self._fast_ema: float | None = None
+        self._slow_ema: float | None = None
 
         # Volatility state
         self.sigma = 0.0                # Current volatility estimate (updated on each tick)
@@ -72,8 +106,8 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         # strategy quietly under-quote for the whole run.
         self._config_validated: bool = False
 
-    # Internal helpers
-    
+    # ── Internal helpers ──────────────────────────────────────────────────
+
     def _time_left(self) -> float:
         """
         Returns T - t normalised to [0, 1] using the *simulation* clock.
@@ -127,6 +161,60 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         if math.isfinite(sigma):
             self.sigma = sigma
 
+    def _update_momentum(self, mid_price: float) -> None:
+        """Update fast and slow EMAs for momentum detection."""
+        if self._fast_ema is None:
+            self._fast_ema = mid_price
+            self._slow_ema = mid_price
+            return
+        self._fast_ema = self._FAST_ALPHA * mid_price + (1 - self._FAST_ALPHA) * self._fast_ema
+        self._slow_ema = self._SLOW_ALPHA * mid_price + (1 - self._SLOW_ALPHA) * self._slow_ema
+
+    def _momentum_adjustment(self, half_spread: float) -> float:
+        """
+        Returns a dollar price adjustment to add to the reservation price.
+
+        Positive = uptrend → shift quotes higher (widen bid, let price come to ask).
+        Negative = downtrend → shift quotes lower (widen ask, let price come to bid).
+
+        The adjustment is capped at ±3× half_spread for strong trend-following.
+        """
+        if self._fast_ema is None or self._slow_ema is None or self._slow_ema == 0:
+            return 0.0
+        if self.trend_skew <= 0:
+            return 0.0
+        # Normalised momentum: (fast - slow) / slow, then scale
+        momentum = (self._fast_ema - self._slow_ema) / self._slow_ema
+        # Scale to be meaningful relative to price level
+        adj = momentum * self.trend_skew * self._slow_ema
+        # Allow up to 3× half_spread of skew for aggressive trend following
+        cap = half_spread * 3.0
+        return max(-cap, min(cap, adj))
+
+    def _should_halt_side(self) -> str | None:
+        """
+        If the trend is strong enough, return 'bid' or 'ask' to halt that side.
+        Returns None if both sides should be quoted.
+        """
+        if self._fast_ema is None or self._slow_ema is None or self._slow_ema == 0:
+            return None
+        if self.trend_skew <= 0:
+            return None
+        momentum = (self._fast_ema - self._slow_ema) / self._slow_ema
+        if momentum > self._HALT_THRESHOLD:
+            return 'bid'   # uptrend → halt bids to avoid buying into rising prices
+        if momentum < -self._HALT_THRESHOLD:
+            return 'ask'   # downtrend → halt asks to avoid selling into falling prices
+        return None
+
+    def _needs_requote(self, mid_price: float) -> bool:
+        """Return True if we should cancel and replace current quotes."""
+        if self._force_requote:
+            return True
+        if self._last_quoted_mid is None:
+            return True
+        return abs(mid_price - self._last_quoted_mid) >= self.requote_threshold
+
     def _audit_config(self, mid_price: float) -> None:
         """One-shot sanity check after the first market tick.
 
@@ -176,8 +264,8 @@ class AvellanedaStoikovStrategy(BaseStrategy):
             self.cancel_order(oid)
         self._active_order_ids.clear()
 
-    # Core AS formulas
-    
+    # ── Core AS formulas ──────────────────────────────────────────────────
+
     def calculate_reservation_price(self, mid_price: float, time_left: float) -> float:
         """
         Inventory-adjusted theoretical mid-price.
@@ -195,10 +283,10 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         liquidity_term = (1.0 / self.gamma) * math.log(1.0 + self.gamma / self.k)
         return risk_term + liquidity_term
 
-    
-    def calculate_quotes(self, mid_price: float) -> tuple[float, float]:
+    def calculate_quotes(self, mid_price: float) -> tuple[float | None, float | None]:
         """
-        Returns (bid_price, ask_price) using the full AS model.
+        Returns (bid_price, ask_price) using the full AS model with momentum adjustment.
+        Either may be None if the momentum filter halts one side.
         """
         if self.sigma == 0.0:
             # Volatility not yet estimated — fall back to symmetric spread
@@ -209,13 +297,25 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         reservation = self.calculate_reservation_price(mid_price, time_left)
         half_spread = self.calculate_optimal_half_spread(time_left)
 
+        # Shift reservation price to follow momentum — reduces adverse selection
+        # on trending days by quoting in the direction of the trend.
+        trend_adj = self._momentum_adjustment(half_spread)
+        reservation += trend_adj
+
         bid_price = reservation - half_spread
         ask_price = reservation + half_spread
 
+        # In strong trends, halt the adverse side entirely
+        halted = self._should_halt_side()
+        if halted == 'bid':
+            bid_price = None
+        elif halted == 'ask':
+            ask_price = None
+
         return bid_price, ask_price
 
-    # Event handlers
-    
+    # ── Event handlers ────────────────────────────────────────────────────
+
     def on_market_data(self, event: dict) -> None:
         """
         Triggered when new market data arrives.
@@ -241,6 +341,9 @@ class AvellanedaStoikovStrategy(BaseStrategy):
             self._audit_config(mid_price)
             self._config_validated = True
 
+        # Always update momentum and volatility first (no look-ahead bias)
+        self._update_momentum(mid_price)
+
         # Quote using volatility from *prior* ticks only (no look-ahead bias),
         # then update volatility with the current tick afterwards.
         if self.sigma != 0.0:
@@ -250,7 +353,13 @@ class AvellanedaStoikovStrategy(BaseStrategy):
 
         self._update_volatility(mid_price, event["local_ts_ms"])
 
-        if bid_price is None:
+        if bid_price is None and ask_price is None:
+            return
+
+        # ── Requote threshold ─────────────────────────────────────────────
+        # Skip cancel-replace if price hasn't moved enough — keeps quotes
+        # live longer, reduces staleness, and improves survival rate.
+        if not self._needs_requote(mid_price):
             return
 
         # Capture the orders we're about to cancel so fit_quote can treat
@@ -259,31 +368,39 @@ class AvellanedaStoikovStrategy(BaseStrategy):
         soon_to_cancel = tuple(self._active_order_ids)
         self._cancel_active_orders()
 
-        bid_qty = self.fit_quote(
-            "buy", bid_price, self.order_size,
-            exclude_locks_from_orders=soon_to_cancel,
-        )
-        ask_qty = self.fit_quote(
-            "sell", ask_price, self.order_size,
-            exclude_locks_from_orders=soon_to_cancel,
-        )
+        bid_qty = 0
+        if bid_price is not None:
+            bid_qty = self.fit_quote(
+                "buy", bid_price, self.order_size,
+                exclude_locks_from_orders=soon_to_cancel,
+            )
+        ask_qty = 0
+        if ask_price is not None:
+            ask_qty = self.fit_quote(
+                "sell", ask_price, self.order_size,
+                exclude_locks_from_orders=soon_to_cancel,
+            )
 
         new_active: list[str] = []
-        if bid_qty > 0:
+        if bid_price is not None and bid_qty > 0:
             bid_id = f"as_bid_{uuid.uuid4().hex[:8]}"
             self.submit_order(bid_price, "buy", bid_qty, order_id=bid_id)
             new_active.append(bid_id)
-        if ask_qty > 0:
+        if ask_price is not None and ask_qty > 0:
             ask_id = f"as_ask_{uuid.uuid4().hex[:8]}"
             self.submit_order(ask_price, "sell", ask_qty, order_id=ask_id)
             new_active.append(ask_id)
 
         self._active_order_ids = new_active
+        self._last_quoted_mid = mid_price
+        self._force_requote = False
 
     def on_order_fill(self, fill_event) -> None:
         """
         Triggered when an order is executed.
         Updates inventory based on which side was filled.
+        Forces an immediate requote on the next tick so the reservation price
+        re-skews for the new inventory level without waiting for a price move.
         """
         filled_amount = fill_event.quantity / QUANTITY_MULTIPLIER
 
@@ -298,6 +415,9 @@ class AvellanedaStoikovStrategy(BaseStrategy):
             self.inventory_position += filled_amount
         else:
             self.inventory_position -= filled_amount
+
+        # Force an immediate requote on the next tick to reflect the new inventory
+        self._force_requote = True
 
 
 # ── Registry registration ────────────────────────────────────────────────
@@ -318,6 +438,12 @@ register(
         {"name": "session_duration", "label": "Session Duration (s)", "type": "float",
          "default": 86400, "min": 3600, "max": 86400, "step": 3600,
          "description": "Trading session length in seconds."},
+        {"name": "requote_threshold", "label": "Requote Threshold (USD)", "type": "float",
+         "default": 1.0, "min": 0.0, "max": 50.0, "step": 0.5,
+         "description": "Only cancel-replace quotes when mid-price moves by this many USD. Higher = fewer quote refreshes, lower staleness."},
+        {"name": "trend_skew", "label": "Trend Skew", "type": "float",
+         "default": 0.5, "min": 0.0, "max": 2.0, "step": 0.1,
+         "description": "How aggressively to shift quotes in the direction of the trend. 0 = off, higher = more trend-following."},
     ],
     liquidity_attr="k",
     category="Stochastic Control",

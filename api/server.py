@@ -297,11 +297,10 @@ def _run_day(job_id: str, label: str, day: str):
         if all_done and not job["done_event"].is_set():
             _push_update(job, "__system__", "__all__", "all_done")
             job["done_event"].set()
-            # TEMPORARILY DISABLED for diagnosing hang issue
-            # try:
-            #     executor.submit(_persist_job_to_history, job_id)
-            # except Exception:
-            #     pass
+            try:
+                executor.submit(_persist_job_to_history, job_id)
+            except Exception as e:
+                print(f"Failed to submit history task: {e}")
 
 
 def _persist_job_to_history(job_id: str) -> None:

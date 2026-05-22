@@ -35,6 +35,7 @@ class GLFTMicropriceStrategy(BaseStrategy):
         max_inventory: float = 0.5,
         kappa: float = 1.5,
         maker_fee_bps: int = 10,
+        requote_threshold: float = 1.0,
     ):
         super().__init__()
 
@@ -52,6 +53,7 @@ class GLFTMicropriceStrategy(BaseStrategy):
         self.max_inventory = max_inventory
         self.order_size = order_size
         self._maker_fee_rate = maker_fee_bps / 10_000
+        self.requote_threshold = requote_threshold
 
         self.sigma = 0.0
         self._mid_prices: deque = deque(maxlen=self._VOL_WINDOW)
@@ -63,6 +65,8 @@ class GLFTMicropriceStrategy(BaseStrategy):
         self._session_duration_ms: float = session_duration * 1000.0
 
         self._active_order_ids: list[str] = []
+        self._last_quoted_mid: float | None = None
+        self._force_requote: bool = False
 
     def _time_left(self) -> float:
         if self._session_start_ms is None:
@@ -104,6 +108,14 @@ class GLFTMicropriceStrategy(BaseStrategy):
         for oid in self._active_order_ids:
             self.cancel_order(oid)
         self._active_order_ids.clear()
+
+    def _needs_requote(self, ref_price: float) -> bool:
+        """Return True if we should cancel and replace current quotes."""
+        if self._force_requote:
+            return True
+        if self._last_quoted_mid is None:
+            return True
+        return abs(ref_price - self._last_quoted_mid) >= self.requote_threshold
 
     @staticmethod
     def _compute_microprice(event: dict) -> float:
@@ -159,6 +171,9 @@ class GLFTMicropriceStrategy(BaseStrategy):
         if bid_price is None and ask_price is None:
             return
 
+        if not self._needs_requote(microprice):
+            return
+
         soon_to_cancel = tuple(self._active_order_ids)
         self._cancel_active_orders()
         new_ids = []
@@ -178,6 +193,8 @@ class GLFTMicropriceStrategy(BaseStrategy):
                 new_ids.append(ask_id)
 
         self._active_order_ids = new_ids
+        self._last_quoted_mid = microprice
+        self._force_requote = False
 
     def on_order_fill(self, fill_event) -> None:
         filled_amount = fill_event.quantity / QUANTITY_MULTIPLIER
@@ -193,6 +210,8 @@ class GLFTMicropriceStrategy(BaseStrategy):
             self.inventory_position += filled_amount
         else:
             self.inventory_position -= filled_amount
+
+        self._force_requote = True
 
 
 # ── Registry registration ────────────────────────────────────────────────
@@ -219,6 +238,9 @@ register(
         {"name": "kappa", "label": "Kappa", "type": "float",
          "default": 1.5, "min": 0.1, "max": 10.0, "step": 0.1,
          "description": "Order book liquidity/density parameter."},
+        {"name": "requote_threshold", "label": "Requote Threshold (USD)", "type": "float",
+         "default": 1.0, "min": 0.0, "max": 50.0, "step": 0.5,
+         "description": "Only cancel-replace quotes when microprice moves by this many USD. Higher = fewer refreshes."},
     ],
     liquidity_attr="kappa",
     category="Stochastic Control",

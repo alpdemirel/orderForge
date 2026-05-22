@@ -45,6 +45,7 @@ class GLFTStrategy(BaseStrategy):
         max_inventory: float = 0.5,
         kappa: float = 1.5,
         maker_fee_bps: int = 10,
+        requote_threshold: float = 1.0,
     ):
         super().__init__()
 
@@ -62,6 +63,7 @@ class GLFTStrategy(BaseStrategy):
         self.max_inventory = max_inventory
         self.order_size = order_size
         self._maker_fee_rate = maker_fee_bps / 10_000
+        self.requote_threshold = requote_threshold
 
         self.sigma = 0.0
         self._mid_prices: deque = deque(maxlen=self._VOL_WINDOW)
@@ -73,6 +75,8 @@ class GLFTStrategy(BaseStrategy):
         self._session_duration_ms: float = session_duration * 1000.0
 
         self._active_order_ids: list[str] = []
+        self._last_quoted_mid: float | None = None
+        self._force_requote: bool = False
 
     # ── Internal helpers ──────────────────────────────────────────────────
 
@@ -117,6 +121,14 @@ class GLFTStrategy(BaseStrategy):
         for oid in self._active_order_ids:
             self.cancel_order(oid)
         self._active_order_ids.clear()
+
+    def _needs_requote(self, mid_price: float) -> bool:
+        """Return True if we should cancel and replace current quotes."""
+        if self._force_requote:
+            return True
+        if self._last_quoted_mid is None:
+            return True
+        return abs(mid_price - self._last_quoted_mid) >= self.requote_threshold
 
     # ── Core GLFT formulas ────────────────────────────────────────────────
 
@@ -179,6 +191,9 @@ class GLFTStrategy(BaseStrategy):
         if bid_price is None and ask_price is None:
             return
 
+        if not self._needs_requote(mid_price):
+            return
+
         soon_to_cancel = tuple(self._active_order_ids)
         self._cancel_active_orders()
         new_ids = []
@@ -198,6 +213,8 @@ class GLFTStrategy(BaseStrategy):
                 new_ids.append(ask_id)
 
         self._active_order_ids = new_ids
+        self._last_quoted_mid = mid_price
+        self._force_requote = False
 
     def on_order_fill(self, fill_event) -> None:
         filled_amount = fill_event.quantity / QUANTITY_MULTIPLIER
@@ -213,6 +230,8 @@ class GLFTStrategy(BaseStrategy):
             self.inventory_position += filled_amount
         else:
             self.inventory_position -= filled_amount
+
+        self._force_requote = True
 
 
 # ── Registry registration ────────────────────────────────────────────────
@@ -239,6 +258,9 @@ register(
         {"name": "kappa", "label": "Kappa", "type": "float",
          "default": 1.5, "min": 0.1, "max": 10.0, "step": 0.1,
          "description": "Order book liquidity/density parameter."},
+        {"name": "requote_threshold", "label": "Requote Threshold (USD)", "type": "float",
+         "default": 1.0, "min": 0.0, "max": 50.0, "step": 0.5,
+         "description": "Only cancel-replace quotes when mid-price moves by this many USD. Higher = fewer refreshes."},
     ],
     liquidity_attr="kappa",
     category="Stochastic Control",
